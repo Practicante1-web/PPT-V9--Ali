@@ -558,3 +558,4 @@ def render_expansion(fields, images):
     image = media(images.get('expansion_intelligence'), 'expansion-summary-image', 'Carga la foto de expansión', 'Foto de expansión')
     return f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>OXXO | Expansión</title><style>
 @page{{size:13.333in 7.5in;margin:0}}*{{box-sizing:border-box}}body{{margin:0;background:#121212;font-family:Aptos,Arial,sans-serif;color:#252525}}.page{{width:13.333in;height:7.5in;padding:.55in 
+'''
