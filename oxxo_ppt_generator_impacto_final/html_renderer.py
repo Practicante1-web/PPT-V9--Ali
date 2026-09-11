@@ -230,7 +230,7 @@ def render(fields, sheets, images):
             )
         return ''.join(cards_out) or '<div class="empty-note">Registra generadores para visualizarlos aquí.</div>'
 
-    housing_cards = build_generator_cards('housing', fallback_images=True)
+    housing_cards = build_generator_cards('housing', fallback_images=False)
     employment_cards = build_generator_cards('employment')
     links = ' <span class="link-separator">|</span> '.join(filter(None, [
         link('Ubicación', fields.get('location_link') or fields.get('maps_link')),
