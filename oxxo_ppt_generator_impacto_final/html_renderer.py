@@ -350,6 +350,16 @@ def render(fields, sheets, images):
         </div>
     ''', number=None))
 
+    if fields.get('microsaturation_enabled') == 'Sí':
+        micro_present = [images.get(f'microsaturation_image_{i}') for i in range(1, 6) if images.get(f'microsaturation_image_{i}')]
+        count_class = f'count-{min(len(micro_present), 5)}' if micro_present else 'count-1'
+        micro_html = ''.join(
+            f'<img class="micro-photo" src="{image_src(im)}" alt="Foto de microsaturación">' for im in micro_present
+        ) or '<div class="empty-note">Registra fotos de microsaturación para visualizarlas aquí.</div>'
+        slides.append(slide('Microsaturación adicional', f'''
+            <div class="micro-grid {count_class}">{micro_html}</div>
+        ''', number=None))
+
     slides.append(slide('Layout · Capex', f'''
         <div class="single-asset-layout">
             <div class="asset-card single-asset-card">
@@ -382,16 +392,6 @@ def render(fields, sheets, images):
     ''', number=10))
 
     slides.append(financial_slide(images.get('financial_viability_image')))
-
-    if fields.get('microsaturation_enabled') == 'Sí':
-        micro_present = [images.get(f'microsaturation_image_{i}') for i in range(1, 6) if images.get(f'microsaturation_image_{i}')]
-        count_class = f'count-{min(len(micro_present), 5)}' if micro_present else 'count-1'
-        micro_html = ''.join(
-            f'<img class="micro-photo" src="{image_src(im)}" alt="Foto de microsaturación">' for im in micro_present
-        ) or '<div class="empty-note">Registra fotos de microsaturación para visualizarlas aquí.</div>'
-        slides.append(slide('Microsaturación adicional', f'''
-            <div class="micro-grid {count_class}">{micro_html}</div>
-        ''', number=13))
 
     css = '''
 @page { size: 13.333in 7.5in; margin: 0; }
