@@ -254,6 +254,7 @@ def render(fields, sheets, images):
     upz_name = text(fields.get('new_upz', 'UPZ / comuna') if upz == 'UPZ / comuna nueva' else upz or fields.get('new_upz', 'UPZ / comuna'))
     analyzed_count = len(d)
     total_market = (fields.get('housing_300', 0) or 0) + (fields.get('jobs_300', 0) or 0)
+    total_market_100 = (fields.get('housing_100', 0) or 0) + (fields.get('jobs_100', 0) or 0)
     conventions = convention_legend(images, 'compact')
     conventions_strip = convention_legend(images, 'strip')
 
@@ -316,15 +317,19 @@ def render(fields, sheets, images):
         <div class="expansion-main-layout">
             <div class="visual-card expansion-main-photo">{media(images.get('expansion_intelligence'), 'expansion-main-image', 'Carga la foto de expansión', 'Foto de expansión')}</div>
             <div class="expansion-main-panel">
-                <div class="kpi-grid kpi-grid-radius">
-                    <div><span>Viviendas 100 m</span><strong>{number(fields.get('housing_100', 0))}</strong></div>
+                <div class="kpi-grid">
                     <div><span>Viviendas 300 m</span><strong>{number(fields.get('housing_300', 0))}</strong></div>
-                    <div><span>Empleos 100 m</span><strong>{number(fields.get('jobs_100', 0))}</strong></div>
                     <div><span>Empleos 300 m</span><strong>{number(fields.get('jobs_300', 0))}</strong></div>
+                    <div class="accent-kpi"><span>Mercado total</span><strong>{number(total_market)}</strong><small>Viviendas + empleos</small></div>
                 </div>
-                <div class="market-total-banner"><span>Mercado total (300 m)</span><strong>{number(total_market)}</strong><small>Viviendas + empleos</small></div>
                 <div class="traffic-strip"><span>TRÁFICO / 15 MIN</span><b>Peatonal {text(fields.get('pedestrian_15', '—'))}</b><b>Vehicular {text(fields.get('vehicle_15', '—'))}</b><b>Motos {text(fields.get('motorcycle_15', '—'))}</b></div>
                 <div class="market-share"><div><span>Viviendas / mercado total</span><strong>{percentage(fields.get('housing_300', 0), total_market)}</strong></div><div><span>Empleos / mercado total</span><strong>{percentage(fields.get('jobs_300', 0), total_market)}</strong></div></div>
+                <div class="kpi-grid kpi-grid-secondary">
+                    <div><span>Viviendas 100 m</span><strong>{number(fields.get('housing_100', 0))}</strong></div>
+                    <div><span>Empleos 100 m</span><strong>{number(fields.get('jobs_100', 0))}</strong></div>
+                    <div class="accent-kpi"><span>Mercado total</span><strong>{number(total_market_100)}</strong><small>Viviendas + empleos</small></div>
+                </div>
+                <div class="market-share"><div><span>Viviendas / mercado total</span><strong>{percentage(fields.get('housing_100', 0), total_market_100)}</strong></div><div><span>Empleos / mercado total</span><strong>{percentage(fields.get('jobs_100', 0), total_market_100)}</strong></div></div>
             </div>
         </div>
     ''', number=None))
@@ -485,21 +490,18 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
     .expansion-main-photo { height:5.65in; }
     .expansion-main-image { display:block; width:100%; height:100%; object-fit:contain; object-position:center; background:#F4F1EA; }
     .expansion-main-panel { min-width:0; padding:.02in 0; }
-    .expansion-main-panel .kpi-grid.kpi-grid-radius { grid-template-columns:repeat(4,1fr); gap:.13in; }
-    .expansion-main-panel .kpi-grid > div { min-height:1.05in; padding:.15in .12in; }
-    .expansion-main-panel .kpi-grid span { font-size:7.6pt; letter-spacing:.06em; }
-    .expansion-main-panel .kpi-grid strong { margin-top:.08in; font-size:21pt; line-height:1; }
-    .expansion-main-panel small { display:block; margin-top:.06in; color:var(--muted); font-size:9pt; }
-    .market-total-banner { display:flex; align-items:baseline; gap:.16in; margin-top:.16in; padding:.15in .2in; background:linear-gradient(110deg,var(--red),#D7281F); box-shadow:0 8px 18px rgba(82,32,0,.16); }
-    .market-total-banner span { color:#FFD9C2; font-size:8.5pt; font-weight:900; letter-spacing:.1em; text-transform:uppercase; }
-    .market-total-banner strong { color:#fff; font-size:26pt; line-height:1; }
-    .market-total-banner small { margin:0 0 0 auto; color:#FFD9C2; font-size:9pt; }
-    .expansion-main-panel .traffic-strip { margin:.18in 0 .18in; padding:.16in .18in; font-size:10pt; }
+    .expansion-main-panel .kpi-grid { gap:.13in; }
+    .expansion-main-panel .kpi-grid.kpi-grid-secondary { margin-top:.16in; }
+    .expansion-main-panel .kpi-grid > div { min-height:1in; padding:.14in .16in; }
+    .expansion-main-panel .kpi-grid span { font-size:8.2pt; letter-spacing:.07em; }
+    .expansion-main-panel .kpi-grid strong { margin-top:.06in; font-size:23pt; line-height:1; }
+    .expansion-main-panel .kpi-grid .accent-kpi small { display:block; margin-top:.04in; color:#FFD9C2; font-size:7.5pt; }
+    .expansion-main-panel .traffic-strip { margin:.16in 0; padding:.14in .16in; font-size:10pt; }
     .expansion-main-panel .traffic-strip span { font-size:9pt; }
-    .expansion-main-panel .traffic-strip b { font-size:16pt; }
-    .expansion-main-panel .market-share { padding:.16in .18in; gap:.16in; }
-    .expansion-main-panel .market-share span { font-size:8pt; }
-    .expansion-main-panel .market-share strong { margin-top:.06in; font-size:23pt; }
+    .expansion-main-panel .traffic-strip b { font-size:15pt; }
+    .expansion-main-panel .market-share { padding:.13in .16in; gap:.16in; }
+    .expansion-main-panel .market-share span { font-size:7.6pt; }
+    .expansion-main-panel .market-share strong { margin-top:.05in; font-size:19pt; }
     .generator-page-heading { display:flex; justify-content:space-between; align-items:end; margin-bottom:.12in; padding-bottom:.08in; border-bottom:2px solid var(--orange); }
     .generator-page-heading span { color:var(--muted); font-size:7pt; font-weight:900; letter-spacing:.12em; }
     .generator-page-heading strong { color:var(--red); font-size:12pt; }
