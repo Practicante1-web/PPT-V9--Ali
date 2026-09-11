@@ -328,6 +328,7 @@ def render(fields, sheets, images):
                 <div class="traffic-strip"><span>TRÁFICO / 15 MIN</span><b>Peatonal {text(fields.get('pedestrian_15', '—'))}</b><b>Vehicular {text(fields.get('vehicle_15', '—'))}</b><b>Motos {text(fields.get('motorcycle_15', '—'))}</b></div>
                 <div class="expansion-columns">
                     <div class="expansion-column">
+                        <div class="expansion-column-title">RADIO 300 M</div>
                         <div class="kpi-grid">
                             <div><span>Viviendas 300 m</span><strong>{number(fields.get('housing_300', 0))}</strong></div>
                             <div><span>Empleos 300 m</span><strong>{number(fields.get('jobs_300', 0))}</strong></div>
@@ -335,7 +336,8 @@ def render(fields, sheets, images):
                         </div>
                         <div class="market-share"><div><span>Viviendas / mercado total</span><strong>{percentage(fields.get('housing_300', 0), total_market)}</strong></div><div><span>Empleos / mercado total</span><strong>{percentage(fields.get('jobs_300', 0), total_market)}</strong></div></div>
                     </div>
-                    <div class="expansion-column">
+                    <div class="expansion-column expansion-column-divided">
+                        <div class="expansion-column-title">RADIO 100 M</div>
                         <div class="kpi-grid">
                             <div><span>Viviendas 100 m</span><strong>{number(fields.get('housing_100', 0))}</strong></div>
                             <div><span>Empleos 100 m</span><strong>{number(fields.get('jobs_100', 0))}</strong></div>
@@ -547,8 +549,11 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
     .expansion-main-photo { display:flex; align-items:center; justify-content:center; max-height:3.15in; background:#F4F1EA; }
     .expansion-main-image { display:block; width:100%; height:auto; max-height:3.15in; object-fit:contain; object-position:center; }
     .expansion-main-panel { flex:1; min-width:0; padding:0; }
-    .expansion-columns { display:grid; grid-template-columns:1fr 1fr; gap:.22in; margin-top:.16in; }
+    .expansion-columns { display:grid; grid-template-columns:1fr 1fr; gap:.22in; margin-top:.16in; position:relative; }
     .expansion-column { min-width:0; }
+    .expansion-column-title { margin:0 0 .09in; color:var(--red); font-size:8.5pt; font-weight:900; letter-spacing:.12em; }
+    .expansion-column-divided { position:relative; padding-left:.22in; }
+    .expansion-column-divided:before { content:''; position:absolute; left:0; top:0; bottom:0; width:1px; background:var(--line); }
     .expansion-main-panel .kpi-grid { grid-template-columns:repeat(3,1fr); gap:.1in; }
     .expansion-main-panel .kpi-grid > div { min-height:.95in; padding:.13in .14in; }
     .expansion-main-panel .kpi-grid span { font-size:7.4pt; letter-spacing:.06em; }
