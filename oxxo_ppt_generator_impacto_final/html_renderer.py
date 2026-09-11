@@ -409,7 +409,7 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
 .cover-art { position:relative; height:5.7in; overflow:hidden; }
 .cover-art:before { content:''; position:absolute; inset:.48in .12in .25in .42in; border:1px solid rgba(255,255,255,.45); border-radius:50% 50% 45% 55%; transform:rotate(-15deg); }
 .cover-art-ring { position:absolute; width:3.55in; height:3.55in; right:.1in; top:.48in; border:26px solid rgba(255,255,255,.18); border-radius:50%; }
-.cover-art-mark { position:absolute; right:.28in; top:2.15in; width:2.7in; filter:drop-shadow(0 10px 20px rgba(0,0,0,.25)); transform:rotate(-7deg); }
+.cover-art-mark { position:absolute; right:.28in; top:2.15in; width:2.7in; filter:drop-shadow(0 10px 20px rgba(0,0,0,.25)); }
 .cover-art-line { position:absolute; right:.5in; bottom:1.05in; width:2.1in; height:.12in; background:var(--orange); transform:rotate(-7deg); }
 .context-row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:.16in; margin:-.02in 0 .17in; }
 .context-row > div { min-height:.57in; padding:.1in .14in; background:#fff; border-left:4px solid var(--red); box-shadow:0 6px 16px rgba(82,16,0,.1); }
