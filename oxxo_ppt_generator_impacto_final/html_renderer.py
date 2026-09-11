@@ -247,10 +247,11 @@ def render(fields, sheets, images):
                 f'<span class="generator-type">{text(card.get("type", "Residencial"))}</span>'
                 f'<strong>{number(card.get("value", 0))}</strong><span class="generator-unit">aprox.</span></div></div>'
             )
-        return ''.join(cards_out) or '<div class="empty-note">Registra generadores para visualizarlos aquí.</div>'
+        html_out = ''.join(cards_out) or '<div class="empty-note">Registra generadores para visualizarlos aquí.</div>'
+        return html_out, len(cards_out)
 
-    housing_cards = build_generator_cards('housing', fallback_images=False)
-    employment_cards = build_generator_cards('employment')
+    housing_cards, housing_count = build_generator_cards('housing', fallback_images=False)
+    employment_cards, employment_count = build_generator_cards('employment')
     links = ' <span class="link-separator">|</span> '.join(filter(None, [
         link('Ubicación', fields.get('location_link') or fields.get('maps_link')),
         link('Video tráfico', fields.get('traffic_video_link')),
@@ -313,10 +314,10 @@ def render(fields, sheets, images):
         {f'<div class="links">{links}</div>' if links else ''}
     ''', number=3))
 
-    for title, cards in [('Entorno | Generadores Vivienda', housing_cards), ('Entorno | Generadores Empleo', employment_cards)]:
+    for title, cards, count in [('Entorno | Generadores Vivienda', housing_cards, housing_count), ('Entorno | Generadores Empleo', employment_cards, employment_count)]:
         slides.append(slide(title, f'''
             <div class="generator-only-layout">
-                <div class="generator-grid generator-grid-large">{cards}</div>
+                <div class="generator-grid generator-grid-large count-{min(count, 4) or 4}">{cards}</div>
             </div>
         ''', number=None))
 
@@ -528,6 +529,20 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
     .generator-grid-large .generator-name { font-size:12pt; white-space:normal; }
     .generator-grid-large .generator-type { font-size:9pt; }
     .generator-grid-large .generator-copy strong { font-size:22pt; }
+    .generator-grid-large.count-1 { grid-template-columns:1fr; height:5.95in; }
+    .generator-grid-large.count-1 .generator-card { grid-template-columns:1fr; grid-template-rows:1fr auto; min-height:5.95in; height:5.95in; gap:.18in; padding:.22in; }
+    .generator-grid-large.count-1 .generator-img { width:100%; height:100%; object-fit:cover; border-radius:.09in; }
+    .generator-grid-large.count-1 .generator-copy { text-align:center; }
+    .generator-grid-large.count-1 .generator-name { display:block; font-size:20pt; white-space:normal; }
+    .generator-grid-large.count-1 .generator-type { font-size:12pt; }
+    .generator-grid-large.count-1 .generator-copy strong { font-size:34pt; }
+    .generator-grid-large.count-2 { grid-template-columns:1fr 1fr; height:5.95in; }
+    .generator-grid-large.count-2 .generator-card { grid-template-columns:1fr; grid-template-rows:1fr auto; min-height:5.95in; height:5.95in; gap:.15in; padding:.18in; }
+    .generator-grid-large.count-2 .generator-img { width:100%; height:100%; object-fit:cover; border-radius:.08in; }
+    .generator-grid-large.count-2 .generator-copy { text-align:center; }
+    .generator-grid-large.count-2 .generator-name { display:block; font-size:15pt; white-space:normal; }
+    .generator-grid-large.count-2 .generator-type { font-size:10pt; }
+    .generator-grid-large.count-2 .generator-copy strong { font-size:27pt; }
     .expansion-main-layout { display:flex; flex-direction:column; gap:.18in; height:5.65in; }
     .expansion-main-photo { display:flex; align-items:center; justify-content:center; max-height:3.15in; background:#F4F1EA; }
     .expansion-main-image { display:block; width:100%; height:auto; max-height:3.15in; object-fit:contain; object-position:center; }
