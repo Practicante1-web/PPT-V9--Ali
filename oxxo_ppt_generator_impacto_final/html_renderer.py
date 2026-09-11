@@ -235,6 +235,11 @@ def render(fields, sheets, images):
             image_key = f'generator_{group}_image_{index}'
             if fallback_images:
                 image_key = f'generator_image_{index}'
+            has_image = bool(images.get(image_key))
+            has_name = bool(str(card.get('name', '') or '').strip())
+            has_value = bool(card.get('value', 0))
+            if not (has_image or has_name or has_value):
+                continue
             cards_out.append(
                 f'<div class="generator-card">'
                 f'{media(images.get(image_key), "generator-img", "Sin foto", f"Generador {index}")}'
