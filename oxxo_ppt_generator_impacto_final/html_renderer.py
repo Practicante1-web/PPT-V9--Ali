@@ -362,7 +362,10 @@ def render(fields, sheets, images):
     slides.append(slide('Tienda Hermana', f'''
         <div class="sister-layout">
             <div class="store-card sister-photo">{media(images.get('similar_image'), 'store-image', 'Carga la foto de la tienda espejo', 'Tienda espejo')}</div>
-            <div class="sister-name-card"><span>TIENDA HERMANA SELECCIONADA</span><strong>{text(fields.get('book_store', 'Pendiente'))}</strong><p>{text(fields.get('similar_comments', ''), 'Sin comentarios adicionales')}</p></div>
+            <div class="sister-right">
+                <div class="sister-name-card compact"><span>TIENDA HERMANA SELECCIONADA</span><strong>{text(fields.get('book_store', 'Pendiente'))}</strong><p>{text(fields.get('similar_comments', ''), 'Sin comentarios adicionales')}</p></div>
+                <div class="sister-secondary-photo">{media(images.get('similar_image_2'), 'sister-secondary-image', 'Carga una foto adicional', 'Foto adicional tienda hermana')}</div>
+            </div>
         </div>
     ''', number=8))
 
@@ -600,10 +603,14 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
     .store-footer { display:grid; grid-template-columns:38% 62%; gap:.18in; align-items:center; margin-top:.14in; padding:.1in .14in; background:#fff; border-left:5px solid var(--orange); box-shadow:0 6px 14px rgba(82,32,0,.08); }
     .sister-layout { display:grid; grid-template-columns:48% 52%; gap:.25in; height:5.55in; }
     .sister-photo { height:5.55in; }
+    .sister-right { display:flex; flex-direction:column; gap:.2in; height:5.55in; }
     .sister-name-card { display:flex; flex-direction:column; justify-content:center; padding:.32in; background:linear-gradient(135deg,#fff,#FBF8F1); border-left:7px solid var(--orange); box-shadow:0 11px 24px rgba(70,25,0,.12); }
+    .sister-name-card.compact { flex:0 0 auto; justify-content:flex-start; padding:.24in .28in; }
     .sister-name-card span { color:var(--muted); font-size:8pt; font-weight:900; letter-spacing:.13em; }
-    .sister-name-card strong { margin-top:.15in; color:var(--red); font-size:27pt; line-height:1.05; overflow-wrap:anywhere; }
-    .sister-name-card p { margin-top:.25in; color:var(--muted); font-size:10pt; line-height:1.35; }
+    .sister-name-card strong { margin-top:.1in; color:var(--red); font-size:23pt; line-height:1.05; overflow-wrap:anywhere; }
+    .sister-name-card p { margin-top:.14in; color:var(--muted); font-size:9.5pt; line-height:1.35; }
+    .sister-secondary-photo { position:relative; flex:1; min-height:0; overflow:hidden; background:#fff; border-radius:.11in; box-shadow:0 11px 24px rgba(70,25,0,.14); }
+    .sister-secondary-image { display:block; width:100%; height:100%; object-fit:cover; object-position:center; }
 
 .store-footer strong { display:block; margin-top:.025in; color:var(--red); font-size:11pt; }
 .store-footer p { margin:0; color:var(--muted); font-size:8.5pt; }
