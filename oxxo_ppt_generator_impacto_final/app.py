@@ -18,7 +18,7 @@ IMAGE_KEYS = {
     'similar_image', 'similar_image_2', 'operating_store_image', 'success_criteria_image',
     'financial_viability_image',
     'microsaturation_image_1', 'microsaturation_image_2', 'microsaturation_image_3', 'microsaturation_image_4', 'microsaturation_image_5',
-    'pilot_image_1', 'pilot_image_2',
+    'pilot_image_1', 'pilot_image_2',  # legado, ya no se usa en el formulario
     'generator_image_1', 'generator_image_2', 'generator_image_3', 'generator_image_4',
     'generator_housing_image_1', 'generator_housing_image_2', 'generator_housing_image_3', 'generator_housing_image_4',
     'generator_employment_image_1', 'generator_employment_image_2', 'generator_employment_image_3', 'generator_employment_image_4',
@@ -429,6 +429,18 @@ with st.expander('Expansión | Mercado y Tráfico'):
     f['vehicle_15'] = st.text_input('Tráfico vehicular', f.get('vehicle_15', ''), key='s5_vehicle')
     f['motorcycle_15'] = st.text_input('Tráfico de motos', f.get('motorcycle_15', ''), key='s5_motorcycle')
 
+with st.expander('Microsaturación adicional'):
+    micro_options = ['No', 'Sí']
+    micro_default = f.get('microsaturation_enabled', 'No') if f.get('microsaturation_enabled', 'No') in micro_options else 'No'
+    f['microsaturation_enabled'] = st.radio('¿Hay microsaturación?', micro_options, index=micro_options.index(micro_default), horizontal=True, key='s12_microsaturation_enabled')
+    if f['microsaturation_enabled'] == 'Sí':
+        st.caption('Puedes subir hasta 5 fotos; la presentación las acomoda automáticamente según la cantidad cargada.')
+        for i in range(1, 6):
+            image_uploader(f'Foto de microsaturación {i}', f'microsaturation_image_{i}', f's12_micro{i}')
+    else:
+        for i in range(1, 6):
+            imgs[f'microsaturation_image_{i}'] = None
+
 with st.expander('Layout | Capex'):
     image_uploader('Foto de layout / CAPEX', 'layout_image', 's6_layout')
     f['capex_comments'] = st.text_area('Comentarios adicionales', f.get('capex_comments', ''), key='s6_comments')
@@ -471,22 +483,6 @@ with st.expander('Condiciones comerciales'):
 
 with st.expander('Viabilidad financiera'):
     image_uploader('Foto de viabilidad financiera — se presentará dentro de la slide', 'financial_viability_image', 's11_image')
-
-with st.expander('Microsaturación adicional'):
-    micro_options = ['No', 'Sí']
-    micro_default = f.get('microsaturation_enabled', 'No') if f.get('microsaturation_enabled', 'No') in micro_options else 'No'
-    f['microsaturation_enabled'] = st.radio('¿Hay microsaturación?', micro_options, index=micro_options.index(micro_default), horizontal=True, key='s12_microsaturation_enabled')
-    if f['microsaturation_enabled'] == 'Sí':
-        st.caption('Puedes subir hasta 5 fotos; la presentación las acomoda automáticamente según la cantidad cargada.')
-        for i in range(1, 6):
-            image_uploader(f'Foto de microsaturación {i}', f'microsaturation_image_{i}', f's12_micro{i}')
-    else:
-        for i in range(1, 6):
-            imgs[f'microsaturation_image_{i}'] = None
-
-with st.expander('Piloto'):
-    image_uploader('Foto de Piloto 1', 'pilot_image_1', 'pilot_img1')
-    image_uploader('Foto de Piloto 2', 'pilot_image_2', 'pilot_img2')
 
 if jun is not None:
     st.subheader('Vista previa de Book')
