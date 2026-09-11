@@ -80,7 +80,7 @@ def media(data, cls, label, alt):
 
 def money(value):
     try:
-        return '$ {:,.1f}'.format(float(value)).replace(',', 'X').replace('.', ',').replace('X', '.')
+        return '$ {:,.0f}'.format(float(value)).replace(',', 'X').replace('.', ',').replace('X', '.')
     except Exception:
         return '—'
 
@@ -272,7 +272,7 @@ def render(fields, sheets, images):
                 <p class="tag">{text(fields.get('regional', 'Centro'))} <span>·</span> Segmento {text(fields.get('segment', 'Base'))}</p>
                 <p class="meta">Especialista: {text(fields.get('specialist', ''))}<br>Creada: {text(fields.get('created_at', date.today().strftime('%d/%m/%Y')))}</p>
             </div>
-            <div class="cover-art"><div class="cover-art-ring"></div><img class="cover-art-mark" src="{OXXO_LOGO_SRC}" alt="OXXO"><div class="cover-art-line"></div></div>
+            <div class="cover-art"><div class="cover-art-ring"></div><img class="cover-art-mark" src="{OXXO_LOGO_SRC}" alt="OXXO"></div>
         </div>
     ''', number=1, cover=True))
 
@@ -319,12 +319,12 @@ def render(fields, sheets, images):
         <div class="expansion-main-layout">
             <div class="visual-card expansion-main-photo">{media(images.get('expansion_intelligence'), 'expansion-main-image', 'Carga la foto de expansión', 'Foto de expansión')}</div>
             <div class="expansion-main-panel">
+                <div class="traffic-strip"><span>TRÁFICO / 15 MIN</span><b>Peatonal {text(fields.get('pedestrian_15', '—'))}</b><b>Vehicular {text(fields.get('vehicle_15', '—'))}</b><b>Motos {text(fields.get('motorcycle_15', '—'))}</b></div>
                 <div class="kpi-grid">
                     <div><span>Viviendas 300 m</span><strong>{number(fields.get('housing_300', 0))}</strong></div>
                     <div><span>Empleos 300 m</span><strong>{number(fields.get('jobs_300', 0))}</strong></div>
                     <div class="accent-kpi"><span>Mercado total</span><strong>{number(total_market)}</strong><small>Viviendas + empleos</small></div>
                 </div>
-                <div class="traffic-strip"><span>TRÁFICO / 15 MIN</span><b>Peatonal {text(fields.get('pedestrian_15', '—'))}</b><b>Vehicular {text(fields.get('vehicle_15', '—'))}</b><b>Motos {text(fields.get('motorcycle_15', '—'))}</b></div>
                 <div class="market-share"><div><span>Viviendas / mercado total</span><strong>{percentage(fields.get('housing_300', 0), total_market)}</strong></div><div><span>Empleos / mercado total</span><strong>{percentage(fields.get('jobs_300', 0), total_market)}</strong></div></div>
                 <div class="kpi-grid kpi-grid-secondary">
                     <div><span>Viviendas 100 m</span><strong>{number(fields.get('housing_100', 0))}</strong></div>
@@ -520,8 +520,8 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
     .generator-grid-large .generator-type { font-size:9pt; }
     .generator-grid-large .generator-copy strong { font-size:22pt; }
     .expansion-main-layout { display:grid; grid-template-columns:38% 62%; gap:.28in; height:5.65in; }
-    .expansion-main-photo { height:5.65in; }
-    .expansion-main-image { display:block; width:100%; height:100%; object-fit:contain; object-position:center; background:#F4F1EA; }
+    .expansion-main-photo { height:5.65in; padding:0; }
+    .expansion-main-image { display:block; width:100%; height:100%; object-fit:cover; object-position:center; }
     .expansion-main-panel { min-width:0; padding:.02in 0; }
     .expansion-main-panel .kpi-grid { gap:.13in; }
     .expansion-main-panel .kpi-grid.kpi-grid-secondary { margin-top:.16in; }
@@ -529,7 +529,7 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
     .expansion-main-panel .kpi-grid span { font-size:8.2pt; letter-spacing:.07em; }
     .expansion-main-panel .kpi-grid strong { margin-top:.06in; font-size:23pt; line-height:1; }
     .expansion-main-panel .kpi-grid .accent-kpi small { display:block; margin-top:.04in; color:#FFD9C2; font-size:7.5pt; }
-    .expansion-main-panel .traffic-strip { margin:.16in 0; padding:.14in .16in; font-size:10pt; }
+    .expansion-main-panel .traffic-strip { margin:0 0 .16in; padding:.14in .16in; font-size:10pt; }
     .expansion-main-panel .traffic-strip span { font-size:9pt; }
     .expansion-main-panel .traffic-strip b { font-size:15pt; }
     .expansion-main-panel .market-share { padding:.13in .16in; gap:.16in; }
