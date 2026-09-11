@@ -334,6 +334,16 @@ def render(fields, sheets, images):
         </div>
     ''', number=None))
 
+    slides.append(slide('Layout · Capex', f'''
+        <div class="single-asset-layout">
+            <div class="asset-card single-asset-card">
+                <div class="asset-label">LAYOUT / CAPEX</div>
+                {media(images.get('layout_image'), 'asset-image', 'Carga la foto de layout / CAPEX', 'Layout y CAPEX')}
+            </div>
+        </div>
+        {f'<div class="comment-ribbon"><span>COMENTARIOS</span><p>{text(fields.get("capex_comments", ""), "")}</p></div>' if fields.get('capex_comments') else ''}
+    ''', number=6))
+
     slides.append(slide('Tienda Hermana', f'''
         <div class="sister-layout">
             <div class="store-card sister-photo"><div class="store-label">FOTO TIENDA HERMANA</div>{media(images.get('similar_image'), 'store-image', 'Carga la foto de la tienda espejo', 'Tienda espejo')}</div>
@@ -341,9 +351,30 @@ def render(fields, sheets, images):
         </div>
     ''', number=8))
 
+    slides.append(slide('Networks', f'''
+        <div class="single-asset-layout">
+            <div class="asset-card single-asset-card">
+                <div class="asset-label">NETWORKS</div>
+                {media(images.get('success_criteria_image'), 'asset-image', 'Carga la foto de Networks', 'Networks')}
+            </div>
+        </div>
+    ''', number=9))
+
     slides.append(slide('Condiciones comerciales', f'''
         <div class="commercial"><div>{table_html(commercial)}</div><div><h3>Hitos del proyecto</h3>{table_html(dates)}<p>{text(fields.get('commercial_comments', ''), '')}</p></div></div>
     ''', number=10))
+
+    slides.append(financial_slide(images.get('financial_viability_image')))
+
+    if fields.get('microsaturation_enabled') == 'Sí':
+        micro_present = [images.get(f'microsaturation_image_{i}') for i in range(1, 6) if images.get(f'microsaturation_image_{i}')]
+        count_class = f'count-{min(len(micro_present), 5)}' if micro_present else 'count-1'
+        micro_html = ''.join(
+            f'<img class="micro-photo" src="{image_src(im)}" alt="Foto de microsaturación">' for im in micro_present
+        ) or '<div class="empty-note">Registra fotos de microsaturación para visualizarlas aquí.</div>'
+        slides.append(slide('Microsaturación adicional', f'''
+            <div class="micro-grid {count_class}">{micro_html}</div>
+        ''', number=13))
 
     css = '''
 @page { size: 13.333in 7.5in; margin: 0; }
