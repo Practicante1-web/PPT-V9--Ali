@@ -221,13 +221,12 @@ def render(fields, sheets, images):
         ['Entrega de local', fields.get('delivery_date', '')],
         ['Apertura', fields.get('opening_date', '')],
     ], columns=['Hito', 'Fecha'])
-
     def build_generator_cards(group, fallback_images=False):
         source = fields.get(f'generator_{group}_cards', [])
-if not isinstance(source, list):
+        if not isinstance(source, list):
             source = []
-    if not source:
-    source = fields.get("generator_cards", []) if isinstance(fields.get('generator_cards', []), list) else []
+        if not source:
+            source = fields.get('generator_cards', []) if isinstance(fields.get('generator_cards', []), list) else []
         cards_out = []
         for index, card in enumerate(source[:4], start=1):
             image_key = f'generator_{group}_image_{index}'
