@@ -224,7 +224,7 @@ def render(fields, sheets, images):
 
     def build_generator_cards(group, fallback_images=False):
         source = fields.get(f'generator_{group}_cards', [])
-        if not isinstance(source, list):
+if not isinstance(source, list):
             source = []
        if not source:
     source = fields.get("generator_cards", []) if isinstance(fields.get('generator_cards', []), list) else []
