@@ -525,9 +525,9 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
     .generator-grid-large .generator-name { font-size:12pt; white-space:normal; }
     .generator-grid-large .generator-type { font-size:9pt; }
     .generator-grid-large .generator-copy strong { font-size:22pt; }
-    .expansion-main-layout { display:flex; flex-direction:column; gap:.2in; height:5.65in; }
-    .expansion-main-photo { height:2.55in; }
-    .expansion-main-image { display:block; width:100%; height:100%; object-fit:cover; object-position:center; }
+    .expansion-main-layout { display:flex; flex-direction:column; gap:.18in; height:5.65in; }
+    .expansion-main-photo { display:flex; align-items:center; justify-content:center; max-height:3.15in; background:#F4F1EA; }
+    .expansion-main-image { display:block; width:100%; height:auto; max-height:3.15in; object-fit:contain; object-position:center; }
     .expansion-main-panel { flex:1; min-width:0; padding:0; }
     .expansion-columns { display:grid; grid-template-columns:1fr 1fr; gap:.22in; margin-top:.16in; }
     .expansion-column { min-width:0; }
