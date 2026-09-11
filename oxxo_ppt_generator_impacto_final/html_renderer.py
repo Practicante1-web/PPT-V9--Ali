@@ -105,11 +105,23 @@ def text(value, fallback='—'):
     return escape(value if value else fallback)
 
 
-def table_html(df, classes='data-table'):
+def table_html(df, classes="data-table"):
     if df is None or df.empty:
         return '<div class="empty-note">Sin registros para el filtro seleccionado.</div>'
-    return df.to_html(index=False, classes=classes, border=0, justify='left', na_rep='—', escape=True)
 
+    df_display = df.copy()
+
+    for column in ["Ventas último mes", "Renta último mes", "Costo m²"]:
+        if column in df_display.columns:
+            df_display[column] = df_display[column].apply(money)
+
+    return df_display.to_html(
+        index=False,
+        classes=classes,
+        border=0,
+        justify="left",
+        na_rep=""
+    )
 
 def link(label, url):
     if not url:
