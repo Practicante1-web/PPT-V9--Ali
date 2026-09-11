@@ -1,521 +1,572 @@
-from base64 import b64decode, b64encode
-from datetime import date, datetime, timezone
-import hashlib
-import json
-import math
-import re
-from pathlib import Path
+from base64 import b64encode
+from datetime import date
+from html import escape
+from io import BytesIO
 
-import streamlit as st
-
-from data_model import read_book, values, filter_jun, summary_table
-from html_renderer import render
-
-ROOT = Path(__file__).parent
-IMAGE_KEYS = {
-    'general_environment_image', 'expansion_map', 'solution_image_1', 'solution_image_2',
-    'expansion_intelligence', 'layout_image', 'capex_image', 'internal_image',
-    'similar_image', 'operating_store_image', 'success_criteria_image',
-    'financial_viability_image',
-    'microsaturation_image_1', 'microsaturation_image_2', 'microsaturation_image_3', 'microsaturation_image_4', 'microsaturation_image_5',
-    'pilot_image_1', 'pilot_image_2',
-    'generator_image_1', 'generator_image_2', 'generator_image_3', 'generator_image_4',
-    'generator_housing_image_1', 'generator_housing_image_2', 'generator_housing_image_3', 'generator_housing_image_4',
-    'generator_employment_image_1', 'generator_employment_image_2', 'generator_employment_image_3', 'generator_employment_image_4',
-}
-FORM_WIDGET_PREFIXES = (
-    'book_', 's1_', 's2_', 's3_', 's4_', 's5_', 's6_', 's7_', 's8_', 's9_',
-    's10_', 's11_', 's12_', 'pilot_',
-)
-
-st.set_page_config(page_title='OXXO | Generar presentación', layout='wide')
-st.title('OXXO · Generador de presentación expansión')
-st.caption('Book.xlsx se carga automáticamente desde el proyecto. Usa JSON para guardar o restaurar la información registrada.')
+import pandas as pd
+from PIL import Image
 
 
-@st.cache_data
-def load_book(source):
-    return read_book(source)
+RED = '#B00000'
+BLUE = '#17457A'
+LIGHTBLUE = '#8FBEDA'
+PURPLE = '#7E3E96'
+ORANGE = '#F29100'
+INK = '#252525'
+CREAM = '#FBF8F1'
+MUTED = '#6E6E6E'
 
-
-def as_bytes(value):
-    """Normalize Streamlit uploads and imported image values to raw bytes."""
-    if value is None:
-        return None
-    if isinstance(value, bytes):
-        return value
-    if hasattr(value, 'getvalue'):
-        return value.getvalue()
-    return None
-
-
-def json_filename(fields):
-    """Build a filesystem-safe JSON filename from the short date and project name."""
-    project_name = str(fields.get('project_name', '') or '').strip()
-    project_name = re.sub(r'[^\w.-]+', '_', project_name, flags=re.UNICODE).strip('._')
-    project_name = project_name or 'sin_nombre'
-    short_date = date.today().strftime('%d-%m-%y')
-    return f'{short_date}_{project_name}.json'
-
-
-def json_safe(value):
-    """Convert form state to strict JSON-compatible values."""
-    if value is None or isinstance(value, (str, int, bool)):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, dict):
-        return {str(key): json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [json_safe(item) for item in value]
-    if isinstance(value, (date, datetime)):
-        return value.isoformat()
-    return str(value)
-
-
-def encode_image(value, filename=''):
-    data = as_bytes(value)
-    if not data:
-        return None
-    return {
-        'name': filename or 'imagen',
-        'data_base64': b64encode(data).decode('ascii'),
-    }
-
-
-def decode_image(value):
-    """Decode current, legacy and data-URL image values stored in JSON."""
-    if isinstance(value, dict):
-        encoded = next(
-            (value.get(key) for key in ('data_base64', 'base64', 'data', 'content', 'src') if value.get(key)),
-            '',
-        )
-    else:
-        encoded = value
-    if not encoded:
-        return None
-    if isinstance(encoded, bytes):
-        return encoded
-    if not isinstance(encoded, str):
-        return None
-    if encoded.startswith('data:') and ',' in encoded:
-        encoded = encoded.split(',', 1)[1]
-    try:
-        compact = ''.join(encoded.split())
-        return b64decode(compact.encode('ascii'), validate=True)
-    except Exception:
-        return None
-
-
-def build_json_payload(fields, images, image_names):
-    exported_images = {}
-    has_layout_image = bool(images.get('layout_image'))
-    for key, value in images.items():
-        # Desde esta versión la slide 6 tiene una sola imagen.
-        if key == 'capex_image' and has_layout_image:
-            continue
-        export_key = 'layout_image' if key == 'capex_image' else key
-        encoded = encode_image(value, image_names.get(key, ''))
-        if encoded:
-            exported_images[export_key] = encoded
-    payload = {
-        'format': 'oxxo-presentation-data',
-        'version': 1,
-        'exported_at': datetime.now(timezone.utc).isoformat(),
-        'book_source': 'Book.xlsx incluido en el proyecto',
-        'fields': json_safe(fields),
-        'images': exported_images,
-    }
-    return json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False).encode('utf-8')
-
-
-def restore_images(imported_images):
-    """Restore image bytes and filenames from current or legacy JSON payloads."""
-    if not isinstance(imported_images, dict):
-        return {}, {}
-    restored_images = {}
-    restored_image_names = {}
-    for key, raw in imported_images.items():
-        decoded = decode_image(raw)
-        if decoded is None:
-            continue
-        # Compatibilidad: la antigua foto de CAPEX se conserva como
-        # la única imagen de la nueva slide 6 si no hay otra de layout.
-        if key == 'capex_image' and 'layout_image' in imported_images:
-            continue
-        target_key = 'layout_image' if key == 'capex_image' else key
-        if key == 'capex_image' and target_key != key:
-            image_name = 'imagen de slide 6'
-        else:
-            image_name = raw.get('name', 'imagen') if isinstance(raw, dict) else 'imagen'
-        restored_images[target_key] = decoded
-        restored_image_names[target_key] = image_name
-    return restored_images, restored_image_names
-
-
-SPECIALISTS = [
-    'ANDRES DUQUE RESTREPO', 'JURY CAROLINA GONZALEZ GOMEZ', 'JENNY ACUNA ROJAS',
-    'LINA DIAZ ORTIZ', 'MARTHA LILIANA LOPEZ CANDAMIL', 'JORGE GRANADOS',
-    'CARLOS BOLAÑOS DIAZ', 'ALEJANDRA ROJAS ROMERO', 'ELVIA JAIMES VELASQUEZ',
-    'LAURA SOFÍA VECINO MARRUGO',
+CONVENTION_COLORS = [
+    ('TMCB', '#B00000'),
+    ('EXP', '#17457A'),
+    ('OBRA', '#8FBEDA'),
+    ('PPT: PUNTO POTENCIAL', '#7E3E96'),
+    ('PR: PLAN RECTOR', '#D8B4FE'),
+    ('NF: NUEVOS FORMATOS', '#FACC15'),
+    ('CERRADA', '#808080'),
+    ('FIRMADA', '#000000'),
 ]
-GENERATOR_TYPES = ['Administrativo', 'Residencial', 'Comercial', 'Industrial', 'Educativo', 'Salud', 'Transporte masivo']
-YES_NO = ['SI', 'NO']
-IPC_OPTIONS = ['PLANO', '+1', '+2', '+3']
-MONTHS = ['', 'ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO', 'JULIO', 'AGOSTO', 'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE']
-
-FORM_WIDGET_DEFAULTS = {
-    'book_city': ('city', ''),
-    'book_upz': ('upz', ''),
-    's1_regional': ('regional', 'Centro'),
-    's1_project': ('project_name', ''),
-    's1_segment': ('segment', 'Base'),
-    's1_specialist': ('specialist', SPECIALISTS[0]),
-    's1_address': ('address', ''),
-    's1_maps': ('maps_link', ''),
-    's2_new_city': ('new_city', ''),
-    's2_new_upz': ('new_upz', ''),
-    's2_comments': ('plan_comments', ''),
-    's3_comments': ('plan_comments', ''),
-    's4_desc': ('point_description', ''),
-    's4_location': ('location_link', ''),
-    's4_street': ('streetview_link', ''),
-    's4_video': ('traffic_video_link', ''),
-    's5_pedestrian': ('pedestrian_15', ''),
-    's5_vehicle': ('vehicle_15', ''),
-    's5_motorcycle': ('motorcycle_15', ''),
-    's5_generator': ('generator_type', GENERATOR_TYPES[0]),
-    's6_comments': ('capex_comments', ''),
-    's8_open_store': ('book_store', ''),
-    's8_comments': ('similar_comments', ''),
-    's10_signature': ('signature', ''),
-    's10_delivery': ('delivery_date', ''),
-    's10_opening': ('opening_date', ''),
-    's10_comments': ('commercial_comments', ''),
-    's12_microsaturation_enabled': ('microsaturation_enabled', 'No'),
-}
-
-COMMERCIAL_WIDGET_DEFAULTS = {
-    's10_commercial_vigencia': ('commercial_vigencia', ''),
-    's10_commercial_permanencia': ('commercial_permanencia', ''),
-    's10_commercial_gracia': ('commercial_gracia', ''),
-    's10_commercial_preop': ('commercial_preop', ''),
-    's10_commercial_ipc': ('commercial_ipc', ''),
-    's10_commercial_operacion': ('commercial_operacion', ''),
-    's10_commercial_alcohol': ('commercial_alcohol', ''),
-    's10_commercial_prima': ('commercial_prima', ''),
-    's10_commercial_anticipo': ('commercial_anticipo', ''),
-    's10_commercial_clausulas': ('commercial_clausulas', ''),
-    's10_commercial_restricciones': ('commercial_restricciones', ''),
-}
-
-NUMERIC_WIDGET_DEFAULTS = {
-    's5_housing_100': 'housing_100',
-    's5_housing_300': 'housing_300',
-    's5_jobs_100': 'jobs_100',
-    's5_jobs_300': 'jobs_300',
-    's10_project_rent': 'project_rent',
-    's10_project_area': 'project_area',
-}
 
 
-def clear_form_widget_state():
-    """Remove prior widget state so an imported presentation can replace it."""
-    for key in list(st.session_state.keys()):
-        if key.startswith(FORM_WIDGET_PREFIXES):
-            del st.session_state[key]
+def convention_legend(images=None, variant='compact'):
+    """Render the convention key with semantic color swatches only."""
+    items = []
+    for label, color in CONVENTION_COLORS:
+        items.append(
+            f'<div class="convention-item">'
+            f'<span class="convention-swatch" style="background:{color}"></span>'
+            f'<span>{escape(label)}</span></div>'
+        )
+    return f'<div class="convention-legend {variant}">' + ''.join(items) + '</div>'
 
 
-def _nonnegative_float(value, default=0.0, maximum=None):
+def image_src(data):
+    """Return a browser-safe data URL, preserving the uploaded image format."""
+    if not data:
+        return ''
+    mime = 'image/png'
     try:
-        number = float(value)
-    except (TypeError, ValueError):
-        number = default
-    if not math.isfinite(number):
-        number = default
-    number = max(default, number)
-    if maximum is not None:
-        number = min(maximum, number)
-    return number
+        with Image.open(BytesIO(data)) as image:
+            fmt = (image.format or 'PNG').upper()
+        mime = {
+            'JPG': 'image/jpeg',
+            'JPEG': 'image/jpeg',
+            'PNG': 'image/png',
+            'WEBP': 'image/webp',
+            'GIF': 'image/gif',
+            'BMP': 'image/bmp',
+            'TIFF': 'image/tiff',
+        }.get(fmt, mime)
+    except Exception:
+        # The upload is still embedded even when Pillow cannot identify it.
+        pass
+    return f'data:{mime};base64,' + b64encode(data).decode('ascii')
 
 
-def populate_form_widget_state(fields):
-    """Push imported field values into the exact keys used by Streamlit widgets."""
-    fields = fields if isinstance(fields, dict) else {}
-    for widget_key, (field_key, default) in FORM_WIDGET_DEFAULTS.items():
-        value = fields.get(field_key, default)
-        st.session_state[widget_key] = default if value is None else value
-
-    for widget_key, (field_key, default) in COMMERCIAL_WIDGET_DEFAULTS.items():
-        value = fields.get(field_key, default)
-        st.session_state[widget_key] = default if value is None else value
-
-    for widget_key, field_key in NUMERIC_WIDGET_DEFAULTS.items():
-        st.session_state[widget_key] = _nonnegative_float(fields.get(field_key, 0.0))
-
-    legacy_cards = fields.get('generator_cards', []) if isinstance(fields.get('generator_cards', []), list) else []
-    groups = [('housing', fields.get('generator_housing_cards', [])), ('employment', fields.get('generator_employment_cards', []))]
-    for group, source_cards in groups:
-        source_cards = source_cards if isinstance(source_cards, list) else []
-        if not source_cards and group == 'housing':
-            source_cards = legacy_cards
-        for index in range(1, 5):
-            card = source_cards[index - 1] if index - 1 < len(source_cards) and isinstance(source_cards[index - 1], dict) else {}
-            st.session_state[f's5_{group}_name{index}'] = '' if card.get('name') is None else str(card.get('name', ''))
-            st.session_state[f's5_{group}_type{index}'] = card.get('type', 'Residencial')
-            st.session_state[f's5_{group}_val{index}'] = _nonnegative_float(card.get('value', 0.0))
-            if group == 'housing':
-                st.session_state[f's5_name{index}'] = st.session_state[f's5_{group}_name{index}']
-                st.session_state[f's5_type{index}'] = st.session_state[f's5_{group}_type{index}']
-                st.session_state[f's5_val{index}'] = st.session_state[f's5_{group}_val{index}']
-
-    valid_months = ('', 'ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO', 'JULIO', 'AGOSTO', 'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE')
-    for field_key in ('signature', 'delivery_date', 'opening_date'):
-        saved_month = str(fields.get(field_key, '') or '').upper()
-        st.session_state[f's10_{field_key}'] = saved_month if saved_month in valid_months else ''
-    microsaturation = fields.get('microsaturation_enabled', 'No')
-    st.session_state['s12_microsaturation_enabled'] = microsaturation if microsaturation in ('No', 'Sí') else 'No'
+def img(data, cls='photo', alt='Imagen de la presentación'):
+    src = image_src(data)
+    return f'<img class="{cls}" src="{src}" alt="{escape(alt, quote=True)}">' if src else ''
 
 
-def image_uploader(label, key, widget_key):
-    """Store uploaded images as bytes so they survive JSON export and reruns."""
-    uploaded = st.file_uploader(label, type=['png', 'jpg', 'jpeg', 'webp'], key=widget_key)
-    if uploaded is not None:
-        st.session_state.images[key] = uploaded.getvalue()
-        st.session_state.image_names[key] = uploaded.name
-    elif key not in st.session_state.images:
-        st.session_state.images[key] = None
-    if st.session_state.images.get(key):
-        image_name = st.session_state.image_names.get(key, 'cargada desde JSON')
-        st.caption(f'Imagen registrada: {image_name}')
-        st.image(st.session_state.images[key], caption='Vista previa de la imagen recuperada', width='stretch')
+def media(data, cls, label, alt):
+    """Keep the visual frame stable even when the user has not uploaded an image."""
+    image = img(data, cls, alt)
+    if image:
+        return image
+    return f'<div class="{cls} image-placeholder"><span>{escape(label)}</span></div>'
 
 
-if 'fields' not in st.session_state:
-    st.session_state.fields = {'created_at': date.today().strftime('%d/%m/%Y')}
-if 'images' not in st.session_state:
-    st.session_state.images = {}
-if 'image_names' not in st.session_state:
-    st.session_state.image_names = {}
+def money(value):
+    try:
+        return '$ {:,.1f}'.format(float(value)).replace(',', 'X').replace('.', ',').replace('X', '.')
+    except Exception:
+        return '—'
 
-f = st.session_state.fields
-imgs = st.session_state.images
-image_names = st.session_state.image_names
 
-with st.sidebar:
-    st.header('Restaurar información')
-    json_upload = st.file_uploader(
-        'Subir JSON de la presentación',
-        type=['json'],
-        key='json_import',
-        help='Carga los campos y las imágenes guardadas anteriormente.',
+def number(value):
+    try:
+        return '{:,.0f}'.format(float(value)).replace(',', 'X').replace('.', ',').replace('X', '.')
+    except Exception:
+        return '—'
+
+
+def percentage(part, total):
+    try:
+        total = float(total)
+        if total == 0:
+            return '—'
+        return '{:,.1f}%'.format(float(part) / total * 100).replace(',', 'X').replace('.', ',').replace('X', '.')
+    except Exception:
+        return '—'
+
+
+def text(value, fallback='—'):
+    value = '' if value is None else str(value).strip()
+    return escape(value if value else fallback)
+
+
+def table_html(df, classes="data-table"):
+    if df is None or df.empty:
+        return '<div class="empty-note">Sin registros para el filtro seleccionado.</div>'
+
+    df_display = df.copy()
+
+    for column in ["Ventas último mes", "Renta último mes", "Costo m²"]:
+        if column in df_display.columns:
+            df_display[column] = df_display[column].apply(money)
+
+    return df_display.to_html(
+        index=False,
+        classes=classes,
+        border=0,
+        justify="left",
+        na_rep=""
     )
-    if json_upload is not None and st.button('Cargar información del JSON', key='load_json', width='stretch'):
-        try:
-            payload = json.loads(json_upload.getvalue().decode('utf-8-sig'))
-            imported_fields = payload.get('fields')
-            if not isinstance(imported_fields, dict):
-                raise ValueError('El JSON no contiene un objeto "fields" válido.')
-            imported_images = payload.get('images', {})
-            if not isinstance(imported_images, dict):
-                raise ValueError('El JSON no contiene un objeto "images" válido.')
 
-            st.session_state.fields = imported_fields
-            restored_images, restored_image_names = restore_images(imported_images)
-            st.session_state.images = restored_images
-            st.session_state.image_names = restored_image_names
-            st.session_state.json_loaded_name = json_upload.name
-            st.session_state.json_loaded_signature = hashlib.sha256(json_upload.getvalue()).hexdigest()
-            clear_form_widget_state()
-            populate_form_widget_state(imported_fields)
-            st.rerun()
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-            st.error(f'No se pudo cargar el JSON: {exc}')
+def link(label, url):
+    if not url:
+        return ''
+    return f'<a href="{escape(str(url), quote=True)}" target="_blank" rel="noopener">{escape(label)}</a>'
 
-    if st.session_state.get('json_loaded_name'):
-        st.success(f'Información cargada: {st.session_state.json_loaded_name}')
 
-    st.divider()
-    st.header('Datos desde Book')
-    book_path = ROOT / 'Book.xlsx'
-    if book_path.exists():
-        sheets = load_book(book_path)
-        jun = sheets.get('JUN')
-        if jun is not None:
-            st.success(f'Book cargado automáticamente · {len(jun):,} tiendas')
-    else:
-        sheets = {}
-        jun = None
-        st.warning('No se encontró Book.xlsx dentro del proyecto.')
-
-    open_stores = values(
-        jun[jun['ESTADO'].astype(str).str.upper().str.contains('ABIERTA', na=False)],
-        'NAME',
-    ) if jun is not None and 'ESTADO' in jun else values(jun, 'NAME')
-    f['open_stores'] = open_stores
-
-with st.expander('Portada', expanded=True):
-    f['regional'] = st.selectbox('Región', ['Centro', 'Nororiente', 'Occidente'], key='s1_regional', index=['Centro', 'Nororiente', 'Occidente'].index(f.get('regional', 'Centro')) if f.get('regional', 'Centro') in ['Centro', 'Nororiente', 'Occidente'] else 0)
-    f['project_name'] = st.text_input('Nombre del punto — se imprimirá como OXXO + nombre', f.get('project_name', ''), key='s1_project')
-    f['segment'] = st.selectbox('Segmento', ['Receso', 'Base', 'Hogar'], key='s1_segment', index=['Receso', 'Base', 'Hogar'].index(f.get('segment', 'Base')) if f.get('segment', 'Base') in ['Receso', 'Base', 'Hogar'] else 1)
-    specialist_default = f.get('specialist', SPECIALISTS[0])
-    f['specialist'] = st.selectbox('Especialista', SPECIALISTS, key='s1_specialist', index=SPECIALISTS.index(specialist_default) if specialist_default in SPECIALISTS else 0)
-    f['address'] = st.text_input('Dirección', f.get('address', ''), key='s1_address')
-    f['maps_link'] = st.text_input('Link de Maps', f.get('maps_link', ''), key='s1_maps')
-    st.caption(f"Fecha automática de creación: {f.get('created_at', date.today().strftime('%d/%m/%Y'))}")
-
-with st.expander('General'):
-    city_options = [''] + values(jun, 'MUNICIPIO') if jun is not None else ['']
-    if 'Ciudad nueva' not in city_options:
-        city_options.append('Ciudad nueva')
-    city_default = f.get('city', '') if f.get('city', '') in city_options else ''
-    city = st.selectbox('Ciudad / municipio', city_options, index=city_options.index(city_default), key='book_city')
-    cdf = jun[jun['MUNICIPIO'].astype(str).str.strip() == city] if city and city != 'Ciudad nueva' and jun is not None else jun if city != 'Ciudad nueva' else None
-    upz_options = [''] + values(cdf, 'UPZ/COMUNA') if cdf is not None else ['']
-    if 'UPZ / comuna nueva' not in upz_options:
-        upz_options.append('UPZ / comuna nueva')
-    upz_default = f.get('upz', '') if f.get('upz', '') in upz_options else ''
-    upz = st.selectbox('UPZ / comuna', upz_options, index=upz_options.index(upz_default), key='book_upz')
-    f.update({'city': city, 'upz': upz})
-    image_uploader('Foto de entorno general', 'general_environment_image', 's2_img')
-    if city == 'Ciudad nueva':
-        f['new_city'] = st.text_input('Ciudad nueva / municipio', f.get('new_city', ''), key='s2_new_city')
-    else:
-        f['new_city'] = f.get('new_city', '')
-    if upz == 'UPZ / comuna nueva':
-        f['new_upz'] = st.text_input('UPZ / comuna nueva', f.get('new_upz', ''), key='s2_new_upz')
-    else:
-        f['new_upz'] = f.get('new_upz', '')
-    f['plan_comments'] = st.text_area('Comentarios del plan rector', f.get('plan_comments', ''), key='s2_comments')
-    st.info('Book genera las tablas TMCB y EXP. La venta promedio combina ambos grupos. Las convenciones muestran los nombres completos.')
-
-with st.expander('Solución de imagen'):
-    image_uploader('Foto inicial local', 'solution_image_1', 's4_img1')
-    image_uploader('Foto solución de imagen', 'solution_image_2', 's4_img2')
-    f['point_description'] = st.text_area('Descripción del punto', f.get('point_description', ''), key='s4_desc')
-    f['location_link'] = st.text_input('Ubicación — link de Maps', f.get('location_link', f.get('maps_link', '')), key='s4_location')
-    f['traffic_video_link'] = st.text_input('Video tráfico — link', f.get('traffic_video_link', ''), key='s4_video')
-    f['streetview_link'] = st.text_input('Street View — link', f.get('streetview_link', ''), key='s4_street')
-
-for group, title in [('housing', 'Entorno | Generadores Vivienda'), ('employment', 'Entorno | Generadores Empleo')]:
-    with st.expander(title):
-        cards = []
-        st.caption('Carga cuatro fotos, indica el tipo de generador y el número aproximado de viviendas o empleos asociados.')
-        for i in range(1, 5):
-            st.markdown(f'**Generador {i}**')
-            a, b, c, d = st.columns([2, 2, 2, 2])
-            with a:
-                image_uploader(f'Foto {i}', f'generator_{group}_image_{i}', f's5_{group}_img{i}')
-            old_cards = f.get(f'generator_{group}_cards', [])
-            old_card = old_cards[i - 1] if i - 1 < len(old_cards) and isinstance(old_cards[i - 1], dict) else {}
-            with b:
-                name = st.text_input('Nombre del generador', old_card.get('name', ''), key=f's5_{group}_name{i}')
-            with c:
-                typ = st.selectbox('Tipo de generador', GENERATOR_TYPES, index=GENERATOR_TYPES.index(old_card.get('type')) if old_card.get('type') in GENERATOR_TYPES else 0, key=f's5_{group}_type{i}')
-            with d:
-                val = st.number_input('Número aprox.', min_value=0.0, value=float(old_card.get('value', 0) or 0), key=f's5_{group}_val{i}')
-            cards.append({'name': name, 'type': typ, 'value': val})
-        f[f'generator_{group}_cards'] = cards
-with st.expander('Expansión | Mercado y Tráfico'):
-    image_uploader('Imagen de inteligencia de expansión', 'expansion_intelligence', 's5_intel')
-    st.caption('Esta imagen aparecerá únicamente en la sección integrada de Expansión | Mercado y Tráfico.')
-    st.markdown('**Mercado y vivienda/empleo**')
-    for key, label in [('housing_100', 'Viviendas a 100 m'), ('housing_300', 'Viviendas a 300 m'), ('jobs_100', 'Empleos a 100 m'), ('jobs_300', 'Empleos a 300 m')]:
-        f[key] = st.number_input(label, min_value=0.0, value=float(f.get(key, 0) or 0), key=f's5_{key}')
-    principal_default = f.get('generator_type', GENERATOR_TYPES[0])
-    f['generator_type'] = st.selectbox('Tipo de generador principal', GENERATOR_TYPES, index=GENERATOR_TYPES.index(principal_default) if principal_default in GENERATOR_TYPES else 0, key='s5_generator')
-    st.markdown('**Tráficos cada 15 minutos**')
-    f['pedestrian_15'] = st.text_input('Tráfico peatonal', f.get('pedestrian_15', ''), key='s5_pedestrian')
-    f['vehicle_15'] = st.text_input('Tráfico vehicular', f.get('vehicle_15', ''), key='s5_vehicle')
-    f['motorcycle_15'] = st.text_input('Tráfico de motos', f.get('motorcycle_15', ''), key='s5_motorcycle')
-
-with st.expander('Layout | Capex'):
-    image_uploader('Foto de layout / CAPEX', 'layout_image', 's6_layout')
-    f['capex_comments'] = st.text_area('Comentarios adicionales', f.get('capex_comments', ''), key='s6_comments')
-
-with st.expander('Tienda Hermana'):
-    image_uploader('Foto Tienda Hermana', 'similar_image', 's8_similar')
-    open_store_options = [''] + f.get('open_stores', [])
-    saved_store = f.get('book_store', '') if f.get('book_store', '') in open_store_options else ''
-    f['book_store'] = st.selectbox('Tienda abierta espejo — desde Book', open_store_options, index=open_store_options.index(saved_store), key='s8_open_store') if f.get('open_stores') else ''
-    f['similar_comments'] = st.text_area('Comentarios', f.get('similar_comments', ''), key='s8_comments')
-
-with st.expander('Networks'):
-    image_uploader('Foto de Networks', 'success_criteria_image', 's9_image')
-
-with st.expander('Condiciones comerciales'):
-    st.caption('La columna Estándar se completa automáticamente. La columna Nombre del proyecto queda editable fila por fila.')
-    f['commercial_vigencia'] = st.text_input('Vigencia', f.get('commercial_vigencia', ''), key='s10_commercial_vigencia')
-    f['commercial_permanencia'] = st.selectbox('Permanencia', YES_NO, index=YES_NO.index(f.get('commercial_permanencia', 'NO').upper()) if str(f.get('commercial_permanencia', 'NO')).upper() in YES_NO else 1, key='s10_commercial_permanencia')
-    f['commercial_gracia'] = st.text_input('Periodo de gracia (Dias)', f.get('commercial_gracia', ''), key='s10_commercial_gracia')
-    f['commercial_preop'] = st.text_input('Pre Operativos', f.get('commercial_preop', ''), key='s10_commercial_preop')
-    f['commercial_ipc'] = st.selectbox('IPC', IPC_OPTIONS, index=IPC_OPTIONS.index(f.get('commercial_ipc', 'PLANO')) if f.get('commercial_ipc', 'PLANO') in IPC_OPTIONS else 0, key='s10_commercial_ipc')
-    f['commercial_operacion'] = st.selectbox('Operación 24 Hrs', YES_NO, index=YES_NO.index(f.get('commercial_operacion', 'NO').upper()) if str(f.get('commercial_operacion', 'NO')).upper() in YES_NO else 1, key='s10_commercial_operacion')
-    f['commercial_alcohol'] = st.selectbox('Venta de alcohol', YES_NO, index=YES_NO.index(f.get('commercial_alcohol', 'NO').upper()) if str(f.get('commercial_alcohol', 'NO')).upper() in YES_NO else 1, key='s10_commercial_alcohol')
-    f['commercial_prima'] = st.selectbox('Prima', YES_NO, index=YES_NO.index(f.get('commercial_prima', 'NO').upper()) if str(f.get('commercial_prima', 'NO')).upper() in YES_NO else 1, key='s10_commercial_prima')
-    f['commercial_anticipo'] = st.selectbox('Anticipo', YES_NO, index=YES_NO.index(f.get('commercial_anticipo', 'NO').upper()) if str(f.get('commercial_anticipo', 'NO')).upper() in YES_NO else 1, key='s10_commercial_anticipo')
-    f['commercial_clausulas'] = st.selectbox('Cláusulas Especiales', YES_NO, index=YES_NO.index(str(f.get('commercial_clausulas', 'NO')).upper()) if str(f.get('commercial_clausulas', 'NO')).upper() in YES_NO else 1, key='s10_commercial_clausulas')
-    f['commercial_restricciones'] = st.selectbox('Restricciones', YES_NO, index=YES_NO.index(str(f.get('commercial_restricciones', 'NO')).upper()) if str(f.get('commercial_restricciones', 'NO')).upper() in YES_NO else 1, key='s10_commercial_restricciones')
-    f['project_rent'] = st.number_input('Renta del proyecto', min_value=0.0, value=float(f.get('project_rent', 0) or 0), key='s10_project_rent')
-    f['project_area'] = st.number_input('Área (m²)', min_value=0.0, value=float(f.get('project_area', 0) or 0), key='s10_project_area')
-    f['project_rent_m2'] = f['project_rent'] / f['project_area'] if f['project_area'] else 0
-    f['negotiated_rent'] = f['project_rent']
-    signature_default = str(f.get('signature', '') or '').upper()
-    delivery_default = str(f.get('delivery_date', '') or '').upper()
-    opening_default = str(f.get('opening_date', '') or '').upper()
-    f['signature'] = st.selectbox('Firma (mes)', MONTHS, index=MONTHS.index(signature_default) if signature_default in MONTHS else 0, key='s10_signature')
-    f['delivery_date'] = st.selectbox('Entrega de local (mes)', MONTHS, index=MONTHS.index(delivery_default) if delivery_default in MONTHS else 0, key='s10_delivery')
-    f['opening_date'] = st.selectbox('Apertura (mes)', MONTHS, index=MONTHS.index(opening_default) if opening_default in MONTHS else 0, key='s10_opening')
-    f['commercial_comments'] = st.text_area('Comentarios', f.get('commercial_comments', ''), key='s10_comments')
-
-with st.expander('Viabilidad financiera'):
-    image_uploader('Foto de viabilidad financiera — se presentará dentro de la slide', 'financial_viability_image', 's11_image')
-
-with st.expander('Microsaturación adicional'):
-    micro_options = ['No', 'Sí']
-    micro_default = f.get('microsaturation_enabled', 'No') if f.get('microsaturation_enabled', 'No') in micro_options else 'No'
-    f['microsaturation_enabled'] = st.radio('¿Hay microsaturación?', micro_options, index=micro_options.index(micro_default), horizontal=True, key='s12_microsaturation_enabled')
-    if f['microsaturation_enabled'] == 'Sí':
-        st.caption('Puedes subir hasta 5 fotos; la presentación las acomoda automáticamente según la cantidad cargada.')
-        for i in range(1, 6):
-            image_uploader(f'Foto de microsaturación {i}', f'microsaturation_image_{i}', f's12_micro{i}')
-    else:
-        for i in range(1, 6):
-            imgs[f'microsaturation_image_{i}'] = None
-
-with st.expander('Piloto'):
-    image_uploader('Foto de Piloto 1', 'pilot_image_1', 'pilot_img1')
-    image_uploader('Foto de Piloto 2', 'pilot_image_2', 'pilot_img2')
-
-if jun is not None:
-    st.subheader('Vista previa de Book')
-    st.dataframe(summary_table(filter_jun(sheets, city, upz)), width='stretch', hide_index=True)
-
-st.divider()
-st.subheader('Acciones')
-json_bytes = build_json_payload(f, imgs, image_names)
-col_json, col_presentation = st.columns([1, 1])
-with col_json:
-    st.download_button(
-        'Descargar JSON de datos',
-        data=json_bytes,
-        file_name=json_filename(f),
-        mime='application/json',
-        width='stretch',
-        help='Guarda campos, selecciones e imágenes para restaurarlos después.',
+def slide(title, body, number=None, cover=False):
+    index = ''
+    if cover:
+        return (
+            f'<section class="slide cover">{index}<div class="topline"></div>'
+            f'{body}<div class="footline"></div></section>'
+        )
+    return (
+        f'<section class="slide">{index}<div class="topline"></div>'
+        f'<h1>{escape(title)}</h1>{body}<div class="footline"></div></section>'
     )
-with col_presentation:
-    generate = st.button('Generar presentación', type='primary', width='stretch')
 
-if generate:
-    image_bytes = {key: as_bytes(value) for key, value in imgs.items()}
-    html = render(f, sheets, image_bytes)
-    slide_count = 13 if f.get('microsaturation_enabled') == 'Sí' else 12
-    st.success(f'Presentación generada con {slide_count} secciones.')
-    st.download_button(
-        'Descargar presentación principal',
-        html.encode('utf-8'),
-        file_name='presentacion_oxxo.html',
-        mime='text/html',
-        width='stretch',
-    )
+
+def financial_slide(data):
+    """Financial slide with the regular presentation frame and an optional image."""
+    return slide('Viabilidad financiera', f'''
+        <div class="financial-layout">
+            <div class="financial-photo-card">
+                <div class="panel-kicker">SOPORTE DE VIABILIDAD</div>
+                {media(data, 'financial-image', 'Carga la foto de viabilidad financiera', 'Viabilidad financiera')}
+            </div>
+        </div>
+    ''', number=11)
+
+
+def render(fields, sheets, images):
+    jun = sheets.get('JUN', pd.DataFrame()).copy()
+    city = fields.get('city', '')
+    upz = fields.get('upz', '')
+    segment = str(fields.get('segment', '')).upper()
+
+    city_df = jun[jun['MUNICIPIO'].astype(str).str.strip() == city] if city and 'MUNICIPIO' in jun else jun
+    upz_df = city_df[city_df['UPZ/COMUNA'].astype(str).str.strip() == upz] if upz and 'UPZ/COMUNA' in city_df else city_df
+    d = upz_df if not upz_df.empty else city_df if not city_df.empty else jun
+
+    def pct(df):
+        return (
+            df['SEG26'].astype(str).str.upper().value_counts(normalize=True) * 100
+            if 'SEG26' in df and not df.empty
+            else pd.Series(dtype=float)
+        )
+
+    cp, p = pct(city_df), pct(upz_df)
+    pct_df = pd.DataFrame([
+        {
+            'Segmento': value.title(),
+            'Ciudad': f'{cp.get(value, 0):.1f}%',
+            'UPZ / comuna': f'{p.get(value, 0):.1f}%',
+        }
+        for value in ['RECESO', 'BASE', 'HOGAR']
+    ])
+
+    cols = [c for c in ['NAME', 'SEG26', 'MESOP_NUM', 'VENTAS OUM_NUM', 'RENTA UM_NUM', 'COSTO M2_NUM'] if c in d]
+    rename = {
+        'NAME': 'Tienda',
+        'SEG26': 'Segmento',
+        'MESOP_NUM': 'Mesop',
+        'VENTAS OUM_NUM': 'Ventas último mes',
+        'RENTA UM_NUM': 'Renta último mes',
+        'COSTO M2_NUM': 'Costo m²',
+    }
+    tmc = d[d['TIE27'].astype(str).str.upper().str.contains('TMCB', na=False)] if 'TIE27' in d else d.iloc[0:0]
+    exp = d[d['TIE27'].astype(str).str.upper().str.contains('EXP', na=False)] if 'TIE27' in d else d.iloc[0:0]
+    combined = pd.concat([tmc, exp], ignore_index=True)
+
+    def avg(df, column):
+        return df[column].mean() if column in df and not df.empty else None
+
+    project_area = float(fields.get('project_area', 0) or 0)
+    project_rent = float(fields.get('project_rent', 0) or 0)
+    calculated_rent_m2 = round(project_rent / project_area, 1) if project_area else 0
+    commercial = pd.DataFrame([
+        ['Renta', money(avg(d[d['SEG26'].astype(str).str.upper() == segment], 'RENTA UM_NUM')), money(project_rent) if project_rent else ''],
+        ['Renta / m²', money(avg(d[d['SEG26'].astype(str).str.upper() == segment], 'RENTA UM_NUM') / avg(d[d['SEG26'].astype(str).str.upper() == segment], 'AREA_NUM')) if avg(d[d['SEG26'].astype(str).str.upper() == segment], 'AREA_NUM') else '', money(calculated_rent_m2) if calculated_rent_m2 else ''],
+        ['Área (m²)', '', number(project_area) if project_area else ''],
+        ['Vigencia', '15', fields.get('commercial_vigencia', '')],
+        ['Permanencia', 'NO', fields.get('commercial_permanencia', '')],
+        ['Periodo de gracia (Dias)', '60', fields.get('commercial_gracia', '')],
+        ['Pre Operativos', '0', fields.get('commercial_preop', '')],
+        ['IPC', 'PLANO', fields.get('commercial_ipc', '')],
+        ['Operación 24 Hrs', 'SI', fields.get('commercial_operacion', '')],
+        ['Venta de alcohol', 'SI', fields.get('commercial_alcohol', '')],
+        ['Prima', 'NO', fields.get('commercial_prima', '')],
+        ['Anticipo', 'NO', fields.get('commercial_anticipo', '')],
+        ['Cláusulas Especiales', 'NO', fields.get('commercial_clausulas', '')],
+        ['Restricciones', 'NO', fields.get('commercial_restricciones', '')],
+    ], columns=['Condiciones de negocio', 'Estándar', 'Nombre del proyecto'])
+    dates = pd.DataFrame([
+        ['Firma', fields.get('signature', '')],
+        ['Entrega de local', fields.get('delivery_date', '')],
+        ['Apertura', fields.get('opening_date', '')],
+    ], columns=['Hito', 'Fecha'])
+
+    def build_generator_cards(group, fallback_images=False):
+        source = fields.get(f'generator_{group}_cards', [])
+        if not isinstance(source, list):
+            source = []
+        if not source:
+            source = fields.get('generator_cards', []) if isinstance(fields.get('generator_cards', []), list) else []
+        cards_out = []
+        for index, card in enumerate(source[:4], start=1):
+            image_key = f'generator_{group}_image_{index}'
+            if fallback_images:
+                image_key = f'generator_image_{index}'
+            cards_out.append(
+                f'<div class="generator-card">'
+                f'{media(images.get(image_key), "generator-img", "Sin foto", f"Generador {index}")}'
+                f'<div class="generator-copy"><span class="generator-name">{text(card.get("name", ""), f"Generador {index}")}</span>'
+                f'<span class="generator-type">{text(card.get("type", "Residencial"))}</span>'
+                f'<strong>{number(card.get("value", 0))}</strong><span class="generator-unit">aprox.</span></div></div>'
+            )
+        return ''.join(cards_out) or '<div class="empty-note">Registra generadores para visualizarlos aquí.</div>'
+
+    housing_cards = build_generator_cards('housing', fallback_images=False)
+    employment_cards = build_generator_cards('employment')
+    links = ' <span class="link-separator">|</span> '.join(filter(None, [
+        link('Ubicación', fields.get('location_link') or fields.get('maps_link')),
+        link('Video tráfico', fields.get('traffic_video_link')),
+        link('Street View', fields.get('streetview_link')),
+    ]))
+
+    city_name = text(fields.get('new_city', 'Ciudad') if city == 'Ciudad nueva' else city or fields.get('new_city', 'Ciudad'))
+    upz_name = text(fields.get('new_upz', 'UPZ / comuna') if upz == 'UPZ / comuna nueva' else upz or fields.get('new_upz', 'UPZ / comuna'))
+    analyzed_count = len(d)
+    total_market = (fields.get('housing_300', 0) or 0) + (fields.get('jobs_300', 0) or 0)
+    conventions = convention_legend(images, 'compact')
+    conventions_strip = convention_legend(images, 'strip')
+
+    slides = []
+    slides.append(slide('', f'''
+        <div class="cover-grid">
+            <div class="cover-copy">
+                <div class="brand">OXXO</div>
+                <div class="cover-kicker">PRESENTACIÓN DE EXPANSIÓN</div>
+                <h2>OXXO {text(fields.get('project_name', 'Nombre del punto'))}</h2>
+                <p class="sub">{city_name} <span>·</span> {upz_name}</p>
+                <p class="address">{('<b>' + text(fields.get('address', '')) + '</b> ') if fields.get('address') else ''}{link('Ver en Maps', fields.get('maps_link'))}</p>
+                <p class="tag">{text(fields.get('regional', 'Centro'))} <span>·</span> Segmento {text(fields.get('segment', 'Base'))}</p>
+                <p class="meta">Especialista: {text(fields.get('specialist', ''))}<br>Creada: {text(fields.get('created_at', date.today().strftime('%d/%m/%Y')))}</p>
+            </div>
+            <div class="cover-art"><div class="cover-art-ring"></div><div class="cover-art-mark">OXXO</div><div class="cover-art-line"></div></div>
+        </div>
+    ''', number=1, cover=True))
+
+    slides.append(slide('General', f'''
+        <div class="context-row">
+            <div><span>Ciudad / municipio</span><strong>{city_name}</strong></div>
+            <div><span>UPZ / comuna</span><strong>{upz_name}</strong></div>
+            <div><span>Tiendas analizadas</span><strong>{number(analyzed_count)}</strong></div>
+        </div>
+        <div class="general-layout">
+            <div class="visual-card environment-visual">
+                {media(images.get('general_environment_image'), 'environment-photo', 'Carga una foto de entorno', 'Entorno general')}
+                <div class="visual-caption"><b>Lectura del entorno</b><span>Imagen principal del área de influencia</span></div>
+            </div>
+            <div class="general-right">
+                <div class="panel-kicker">MEZCLA DE MERCADO</div>{table_html(pct_df, 'data-table compact-table')}
+                <div class="general-tables"><div class="table-card red-accent"><h3>Tiendas TMCB</h3>{table_html(tmc[cols].head(4).rename(columns=rename), 'data-table compact-table')}</div><div class="table-card blue-accent"><h3>Tiendas EXP</h3>{table_html(exp[cols].head(4).rename(columns=rename), 'data-table compact-table')}</div></div>
+                <div class="general-kpis"><div><span>Venta promedio</span><strong>{money(avg(combined, 'VENTAS OUM_NUM'))}</strong></div><div><span>Renta promedio</span><strong>{money(avg(combined, 'RENTA UM_NUM'))}</strong></div><div><span>Costo m² promedio</span><strong>{money(avg(combined, 'COSTO M2_NUM'))}</strong></div></div>
+            </div>
+        </div>
+        <div class="general-conventions"><div class="panel-kicker">CONVENCIONES DE TIENDA</div>{conventions}</div>
+    ''', number=2))
+
+    slides.append(slide('Solución de imagen', f'''
+        <div class="solution-photos two-photos">
+            <div>{media(images.get('solution_image_1'), 'photo-large', 'Carga la foto inicial del local', 'Foto inicial local')}</div>
+            <div>{media(images.get('solution_image_2'), 'photo-large', 'Carga la foto solución de imagen', 'Foto solución de imagen')}</div>
+        </div>
+        <div class="description">
+            <h3>Descripción del punto</h3>
+            <p>{text(fields.get('point_description', ''), 'Sin descripción registrada.')}</p>
+        </div>
+        {f'<div class="links">{links}</div>' if links else ''}
+    ''', number=3))
+
+    for title, cards in [('Entorno | Generadores Vivienda', housing_cards), ('Entorno | Generadores Empleo', employment_cards)]:
+        slides.append(slide(title, f'''
+            <div class="generator-only-layout">
+                <div class="generator-grid generator-grid-large">{cards}</div>
+            </div>
+        ''', number=None))
+
+    slides.append(slide('Expansión | Mercado y Tráfico', f'''
+        <div class="expansion-main-layout">
+            <div class="visual-card expansion-main-photo">{media(images.get('expansion_intelligence'), 'expansion-main-image', 'Carga la foto de expansión', 'Foto de expansión')}</div>
+            <div class="expansion-main-panel">
+                <div class="kpi-grid">
+                    <div><span>Viviendas 300 m</span><strong>{number(fields.get('housing_300', 0))}</strong><small>{percentage(fields.get('housing_300', 0), total_market)} del mercado</small></div>
+                    <div><span>Empleos 300 m</span><strong>{number(fields.get('jobs_300', 0))}</strong><small>{percentage(fields.get('jobs_300', 0), total_market)} del mercado</small></div>
+                    <div class="accent-kpi"><span>Mercado total</span><strong>{number(total_market)}</strong><small>Viviendas + empleos</small></div>
+                </div>
+                <div class="traffic-strip"><span>TRÁFICO / 15 MIN</span><b>Peatonal {text(fields.get('pedestrian_15', '—'))}</b><b>Vehicular {text(fields.get('vehicle_15', '—'))}</b><b>Motos {text(fields.get('motorcycle_15', '—'))}</b></div>
+                <div class="market-share"><div><span>Viviendas / mercado total</span><strong>{percentage(fields.get('housing_300', 0), total_market)}</strong></div><div><span>Empleos / mercado total</span><strong>{percentage(fields.get('jobs_300', 0), total_market)}</strong></div></div>
+            </div>
+        </div>
+    ''', number=None))
+
+    slides.append(slide('Tienda Hermana', f'''
+        <div class="sister-layout">
+            <div class="store-card sister-photo"><div class="store-label">FOTO TIENDA HERMANA</div>{media(images.get('similar_image'), 'store-image', 'Carga la foto de la tienda espejo', 'Tienda espejo')}</div>
+            <div class="sister-name-card"><span>TIENDA HERMANA SELECCIONADA</span><strong>{text(fields.get('book_store', 'Pendiente'))}</strong><p>{text(fields.get('similar_comments', ''), 'Sin comentarios adicionales')}</p></div>
+        </div>
+    ''', number=8))
+
+    slides.append(slide('Condiciones comerciales', f'''
+        <div class="commercial"><div>{table_html(commercial)}</div><div><h3>Hitos del proyecto</h3>{table_html(dates)}<p>{text(fields.get('commercial_comments', ''), '')}</p></div></div>
+    ''', number=10))
+
+    css = '''
+@page { size: 13.333in 7.5in; margin: 0; }
+:root { --red:#B00000; --blue:#17457A; --orange:#F29100; --ink:#252525; --cream:#FBF8F1; --muted:#6E6E6E; --line:#E6E1D8; }
+* { box-sizing: border-box; }
+html { background:#121212; }
+body { margin:0; background:#121212; color:var(--ink); font-family:Aptos, Arial, Helvetica, sans-serif; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+.slide { width:13.333in; height:7.5in; position:relative; overflow:hidden; padding:.47in .55in .38in; page-break-after:always; break-after:page; break-inside:avoid; page-break-inside:avoid; background:radial-gradient(circle at 92% 0%, #ffffff 0, #ffffff 38%, var(--cream) 100%); }
+.slide:before { content:''; position:absolute; right:-1.15in; top:.78in; width:2.25in; height:2.25in; border:18px solid rgba(176,0,0,.055); border-radius:50%; pointer-events:none; }
+.slide > * { position:relative; z-index:1; }
+.topline { position:absolute; z-index:3; top:0; left:0; right:0; height:.1in; background:linear-gradient(90deg,var(--red),#D7281F 60%,var(--orange)); }
+.footline { position:absolute; z-index:3; bottom:0; left:0; right:0; height:.12in; background:linear-gradient(90deg,var(--red),var(--orange)); }
+.eyebrow { margin:0 0 .055in; color:var(--muted); font-size:7.3pt; font-weight:800; letter-spacing:.16em; text-transform:uppercase; }
+h1 { margin:.01in 0 .16in; color:var(--red); font-size:25pt; line-height:1.02; letter-spacing:-.025em; }
+h2 { margin:.18in 0 .16in; color:var(--ink); font-size:31pt; line-height:1.02; letter-spacing:-.03em; }
+h3 { margin:.08in 0 .07in; color:var(--red); font-size:13pt; line-height:1.05; }
+p { margin:.08in 0; }
+a { color:var(--red); font-weight:800; text-decoration:none; }
+.cover { padding:.72in; background:linear-gradient(110deg,#FBF8F1 0 58%,#B00000 58% 100%); }
+.cover:before { right:-.5in; top:-.6in; width:4.1in; height:4.1in; border:1px solid rgba(255,255,255,.22); }
+.cover-grid { display:grid; grid-template-columns:58% 42%; align-items:center; height:100%; }
+.cover-copy { padding-right:.35in; }
+.brand { color:var(--red); font-size:31pt; font-weight:900; letter-spacing:-.04em; }
+.cover-kicker { margin-top:.28in; color:var(--red); font-size:10pt; font-weight:900; letter-spacing:.15em; }
+.cover .sub { color:var(--muted); font-size:17pt; }
+.cover .sub span, .cover .tag span { color:var(--orange); }
+.cover .address { min-height:.25in; margin:.14in 0; font-size:11pt; }
+.cover .tag { color:var(--red); font-size:12pt; font-weight:900; }
+.cover .meta { margin-top:.82in; color:#4f4f4f; font-size:10pt; line-height:1.45; }
+.cover-art { position:relative; height:5.7in; overflow:hidden; }
+.cover-art:before { content:''; position:absolute; inset:.48in .12in .25in .42in; border:1px solid rgba(255,255,255,.45); border-radius:50% 50% 45% 55%; transform:rotate(-15deg); }
+.cover-art-ring { position:absolute; width:3.55in; height:3.55in; right:.1in; top:.48in; border:26px solid rgba(255,255,255,.18); border-radius:50%; }
+.cover-art-mark { position:absolute; right:.23in; top:2.0in; color:#fff; font-size:35pt; font-weight:900; letter-spacing:-.05em; transform:rotate(-7deg); }
+.cover-art-line { position:absolute; right:.5in; bottom:1.05in; width:2.1in; height:.12in; background:var(--orange); transform:rotate(-7deg); }
+.context-row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:.16in; margin:-.02in 0 .17in; }
+.context-row > div { min-height:.57in; padding:.1in .14in; background:#fff; border-left:4px solid var(--red); box-shadow:0 6px 16px rgba(82,16,0,.1); }
+.context-row span, .kpi-grid span, .plan-kpis span, .store-footer span { display:block; color:var(--muted); font-size:7pt; font-weight:800; letter-spacing:.09em; text-transform:uppercase; }
+.context-row strong { display:block; margin-top:.035in; color:var(--ink); font-size:12.5pt; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .environment-layout { display:grid; grid-template-columns:61% 39%; gap:.25in; height:5.52in; }
+    .general-layout { display:grid; grid-template-columns:43% 57%; gap:.22in; height:4.35in; }
+    .general-layout .environment-visual { height:4.35in; }
+    .general-layout .environment-photo { height:3.73in; }
+    .general-right { min-width:0; }
+    .general-tables { display:grid; grid-template-columns:1fr 1fr; gap:.12in; margin-top:.10in; }
+    .general-kpis { display:grid; grid-template-columns:repeat(3,1fr); gap:.08in; margin-top:.10in; }
+    .general-kpis > div { min-width:0; padding:.06in .07in; background:linear-gradient(135deg,#fff,#FBF8F1); border-left:3px solid var(--red); box-shadow:0 4px 10px rgba(82,32,0,.08); }
+    .general-kpis span { display:block; color:var(--muted); font-size:5.8pt; font-weight:900; letter-spacing:.045em; line-height:1.05; text-transform:uppercase; }
+    .general-kpis strong { display:block; margin-top:.025in; color:var(--red); font-size:11pt; line-height:1; white-space:nowrap; }
+    .general-conventions { margin-top:.12in; padding:.045in .06in .04in; background:#fff; border-top:2px solid var(--orange); box-shadow:0 4px 10px rgba(82,32,0,.06); }
+    .general-conventions .panel-kicker { margin:0 0 .03in; }
+    .general-conventions .convention-legend { grid-template-columns:repeat(8, minmax(0, 1fr)); gap:.035in; }
+    .general-conventions .convention-item { padding:.012in .02in .016in; }
+    .general-conventions .convention-item span { font-size:4.8pt; }
+    .general-conventions .convention-swatch { height:.13in; }
+
+.visual-card, .plan-map-card, .asset-card, .store-card { position:relative; overflow:hidden; background:#fff; border-radius:.11in; box-shadow:0 11px 24px rgba(70,25,0,.14); }
+.environment-visual { height:5.52in; }
+.environment-photo { display:block; width:100%; height:4.9in; object-fit:cover; object-position:center; }
+.visual-caption { position:absolute; left:0; right:0; bottom:0; min-height:.62in; padding:.13in .17in; color:#fff; background:linear-gradient(90deg,rgba(32,12,0,.88),rgba(32,12,0,.55)); }
+.visual-caption b { display:block; font-size:11pt; }
+.visual-caption span { display:block; margin-top:.02in; font-size:8.5pt; color:#F9E9D8; }
+.insight-panel { display:flex; flex-direction:column; min-width:0; padding:.1in .04in .05in .02in; }
+.panel-kicker { margin:.01in 0 .07in; color:var(--red); font-size:7pt; font-weight:900; letter-spacing:.13em; }
+.data-table { width:100%; border-collapse:separate; border-spacing:0; overflow:hidden; background:#fff; border-radius:.08in; box-shadow:0 7px 16px rgba(82,32,0,.1); font-size:7.9pt; }
+.data-table th { padding:.085in .07in; background:linear-gradient(110deg,var(--red),#D7281F); color:#fff; text-align:left; font-size:7.2pt; letter-spacing:.025em; }
+.data-table td { padding:.075in .07in; border-bottom:1px solid var(--line); line-height:1.12; }
+.data-table tr:nth-child(even) td { background:#FCFAF5; }
+.data-table tr:last-child td { border-bottom:0; }
+.compact-table { font-size:7.35pt; }
+.compact-table th { font-size:6.8pt; padding:.07in .055in; }
+.compact-table td { padding:.062in .055in; }
+.legend-block { margin-top:.19in; padding-top:.13in; border-top:1px solid var(--line); }
+.legend { display:flex; flex-wrap:wrap; gap:.095in .12in; font-size:8.4pt; }
+.convention-legend { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:.035in; }
+    .convention-item { display:grid; grid-template-columns:1fr; grid-template-rows:.235in auto; min-width:0; align-items:center; padding:.018in .025in .025in; background:rgba(255,255,255,.7); border:1px solid #EFEAE2; border-radius:.035in; text-align:center; }
+    .convention-swatch { display:block; width:100%; height:.16in; border-radius:.025in; box-shadow:inset 0 0 0 1px rgba(0,0,0,.08); }
+
+.convention-item span { color:var(--muted); font-size:5.2pt; font-weight:900; letter-spacing:.045em; line-height:1; text-transform:uppercase; }
+.convention-legend.strip { grid-template-columns:repeat(8, minmax(0, 1fr)); gap:.035in; }
+.convention-legend.strip .convention-item { grid-template-rows:.19in auto; padding:.014in .02in .02in; }
+    .convention-legend.strip .convention-swatch { height:.13in; }
+
+.convention-legend.strip .convention-item span { font-size:4.6pt; }
+.convention-band { margin-top:.08in; padding:.035in .05in .04in; background:#fff; border-top:2px solid var(--orange); box-shadow:0 4px 10px rgba(82,32,0,.06); }
+.convention-band .panel-kicker { margin:0 0 .04in .02in; }
+.generators-conventions { margin-top:.12in; }
+.dot { display:inline-block; width:.13in; height:.13in; margin-right:.04in; border-radius:50%; vertical-align:-.018in; }
+.red { background:var(--red); } .blue { background:var(--blue); } .lightblue { background:var(--lightblue); } .purple { background:var(--purple); } .orange { background:var(--orange); }
+.insight-callout { margin-top:auto; padding:.13in .14in; background:linear-gradient(135deg,#FFF2D8,#FFE0B4); border-left:5px solid var(--orange); }
+.insight-callout span { display:block; color:#8A4A00; font-size:7pt; font-weight:900; letter-spacing:.1em; text-transform:uppercase; }
+.insight-callout strong { display:block; margin-top:.02in; color:var(--red); font-size:18pt; }
+.insight-callout small { color:#704817; font-size:8pt; }
+.plan-layout { display:grid; grid-template-columns:34% 66%; gap:.25in; height:4.18in; }
+.plan-map-card { height:4.18in; padding:.14in; }
+.map-image { display:block; width:100%; height:3.2in; object-fit:contain; background:#F4F1EA; border-radius:.07in; }
+.map-caption { padding:.1in .02in 0; color:var(--muted); font-size:8.5pt; line-height:1.25; }
+.plan-tables { display:grid; grid-template-columns:1fr 1fr; gap:.16in; min-width:0; }
+.table-card { min-width:0; padding:.09in; background:#fff; border-radius:.1in; box-shadow:0 8px 18px rgba(82,32,0,.1); }
+.table-card h3 { margin:.01in .03in .08in; font-size:11pt; }
+.table-card h3 span { color:var(--muted); font-size:7pt; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+.red-accent { border-top:5px solid var(--red); } .blue-accent { border-top:5px solid var(--blue); }
+.blue-accent h3 { color:var(--blue); }
+.plan-footer { margin-top:.16in; }
+.plan-kpis { display:grid; grid-template-columns:repeat(3,1fr); gap:.13in; }
+.plan-kpis > div { padding:.1in .13in; background:linear-gradient(135deg,#fff,#FBF8F1); border-left:4px solid var(--red); box-shadow:0 6px 14px rgba(82,32,0,.1); }
+.plan-kpis strong { display:block; margin-top:.025in; color:var(--red); font-size:16pt; }
+.note { color:var(--muted); font-size:8pt; }
+.note b { color:var(--ink); }
+.two-photos { display:grid; grid-template-columns:1fr 1fr; gap:.25in; }
+.solution-photos .photo-large { height:4.25in; }
+.photo-large { display:block; width:100%; height:3.65in; object-fit:cover; border-radius:.1in; box-shadow:0 12px 24px rgba(0,0,0,.22); }
+.description { margin-top:.16in; padding:.12in .16in; background:#fff; border-left:5px solid var(--orange); box-shadow:0 6px 14px rgba(82,32,0,.08); font-size:10pt; }
+.description h3 { display:inline-block; margin:0 .2in 0 0; }
+.description p { display:inline; line-height:1.3; }
+.links { margin-top:.06in; }
+.links a { margin-right:.08in; text-decoration:underline; }
+.link-separator { color:var(--orange); }
+.generators-layout { display:grid; grid-template-columns:36% 64%; gap:.25in; height:4.72in; }
+.intelligence-card { height:4.72in; }
+.intelligence-photo { display:block; width:100%; height:4.1in; object-fit:cover; }
+.market-panel { min-width:0; padding:.02in 0 0; }
+.kpi-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:.11in; }
+.kpi-grid > div { min-height:.7in; padding:.11in .12in; background:#fff; border-top:4px solid var(--red); box-shadow:0 6px 14px rgba(82,32,0,.09); }
+.kpi-grid strong { display:block; margin-top:.04in; color:var(--red); font-size:18pt; line-height:1; }
+.kpi-grid .accent-kpi { background:linear-gradient(135deg,var(--red),#D7281F); border-top-color:var(--orange); }
+.kpi-grid .accent-kpi span, .kpi-grid .accent-kpi strong { color:#fff; }
+.traffic-strip { display:flex; align-items:center; gap:.14in; margin:.15in 0 .13in; padding:.1in .12in; background:#F2EEE5; color:var(--ink); font-size:8pt; }
+.traffic-strip span { margin-right:auto; color:var(--red); font-size:7pt; font-weight:900; letter-spacing:.09em; }
+.traffic-strip b { white-space:nowrap; }
+.market-share { display:grid; grid-template-columns:1fr 1fr; gap:.11in; padding:.1in .13in; background:linear-gradient(100deg,#FFF1D8,#fff); border-left:5px solid var(--orange); }
+.market-share > div { min-width:0; }
+.market-share span { display:block; color:#925000; font-size:6.4pt; font-weight:900; letter-spacing:.045em; line-height:1.1; text-transform:uppercase; }
+.market-share strong { display:block; margin-top:.035in; color:var(--red); font-size:14pt; line-height:1; }
+    .generator-page-layout { display:grid; grid-template-columns:38% 62%; gap:.25in; height:5.55in; }
+    .generator-only-layout { height:5.95in; padding-top:.02in; }
+    .generator-page-panel { min-width:0; padding:.02in 0; }
+    .generator-grid-large { grid-template-columns:1fr 1fr; gap:.2in; margin-top:0; }
+    .generator-grid-large .generator-card { min-height:2.82in; grid-template-columns:3.15in 1fr; gap:.18in; padding:.14in; }
+    .generator-grid-large .generator-img { width:3.15in; height:2.52in; }
+    .generator-grid-large .generator-name { font-size:12pt; white-space:normal; }
+    .generator-grid-large .generator-type { font-size:9pt; }
+    .generator-grid-large .generator-copy strong { font-size:22pt; }
+    .expansion-main-layout { display:grid; grid-template-columns:38% 62%; gap:.28in; height:5.65in; }
+    .expansion-main-photo { height:5.65in; }
+    .expansion-main-image { display:block; width:100%; height:100%; object-fit:contain; object-position:center; background:#F4F1EA; }
+    .expansion-main-panel { min-width:0; padding:.02in 0; }
+    .expansion-main-panel .kpi-grid { gap:.14in; }
+    .expansion-main-panel .kpi-grid > div { min-height:1.18in; padding:.16in .18in; }
+    .expansion-main-panel .kpi-grid span { font-size:9pt; letter-spacing:.08em; }
+    .expansion-main-panel .kpi-grid strong { margin-top:.08in; font-size:30pt; line-height:1; }
+    .expansion-main-panel small { display:block; margin-top:.06in; color:var(--muted); font-size:9pt; }
+    .expansion-main-panel .traffic-strip { margin:.22in 0 .18in; padding:.16in .18in; font-size:10pt; }
+    .expansion-main-panel .traffic-strip span { font-size:9pt; }
+    .expansion-main-panel .traffic-strip b { font-size:16pt; }
+    .expansion-main-panel .market-share { padding:.16in .18in; gap:.16in; }
+    .expansion-main-panel .market-share span { font-size:8pt; }
+    .expansion-main-panel .market-share strong { margin-top:.06in; font-size:23pt; }
+    .generator-page-heading { display:flex; justify-content:space-between; align-items:end; margin-bottom:.12in; padding-bottom:.08in; border-bottom:2px solid var(--orange); }
+    .generator-page-heading span { color:var(--muted); font-size:7pt; font-weight:900; letter-spacing:.12em; }
+    .generator-page-heading strong { color:var(--red); font-size:12pt; }
+    .generator-page-panel .generator-grid { margin-top:0; }
+    .generator-page-panel .traffic-strip { margin-top:.2in; }
+    .generator-grid { display:grid; grid-template-columns:1fr 1fr; gap:.11in; margin-top:.16in; }
+.generator-card { display:grid; grid-template-columns:1.34in 1fr; min-height:.82in; gap:.1in; align-items:center; padding:.07in; background:#fff; border:1px solid #ECE5DA; box-shadow:0 5px 12px rgba(82,32,0,.07); }
+    .generator-img { display:block; width:1.34in; height:.68in; object-fit:contain; object-position:center; border-radius:.055in; background:#F0ECE4; }
+.generator-copy { min-width:0; }
+    .generator-name { display:block; overflow:hidden; color:var(--ink); font-size:8.5pt; font-weight:900; text-overflow:ellipsis; white-space:nowrap; }
+    .generator-type { display:block; overflow:hidden; margin-top:.02in; color:var(--muted); font-size:7.2pt; font-weight:800; text-overflow:ellipsis; text-transform:uppercase; white-space:nowrap; }
+
+.generator-copy strong { display:inline-block; margin-top:.035in; color:var(--red); font-size:15pt; line-height:1; }
+.generator-unit { display:inline-block; margin-left:.04in; color:var(--muted); font-size:7.5pt; }
+    .capex-layout { display:grid; grid-template-columns:1fr 1fr; gap:.25in; height:5.35in; }
+    .single-asset-layout { display:flex; justify-content:center; height:5.35in; }
+    .single-asset-card { width:78%; }
+    .asset-card { height:5.35in; padding:.16in; }
+
+.asset-card:after { content:''; position:absolute; inset:0; pointer-events:none; border:1px solid rgba(255,255,255,.7); border-radius:.11in; }
+.capex-card { background:#F2EEE5; }
+.asset-label, .store-label { position:absolute; z-index:2; top:.14in; left:.16in; padding:.055in .09in; background:var(--red); color:#fff; font-size:7pt; font-weight:900; letter-spacing:.12em; }
+.capex-card .asset-label { background:var(--blue); }
+.asset-image { display:block; width:100%; height:4.95in; object-fit:contain; object-position:center; background:#fff; border-radius:.07in; }
+.comment-ribbon { display:flex; align-items:center; gap:.2in; margin-top:.14in; padding:.09in .14in; background:linear-gradient(90deg,#3E2117,#5A3021); color:#fff; }
+.comment-ribbon span { color:#FFC16D; font-size:7pt; font-weight:900; letter-spacing:.1em; white-space:nowrap; }
+.comment-ribbon p { margin:0; font-size:8.5pt; }
+    .full-photo { display:block; width:calc(100% + 1.1in); height:6.05in; margin-left:-.55in; object-fit:contain; object-position:center; background:#F4F1EA; box-shadow:0 15px 30px rgba(0,0,0,.26); }
+.full-bleed-slide { margin:0 -.55in; }
+.store-pair { display:grid; grid-template-columns:1fr 1fr; gap:.25in; height:5.35in; }
+.store-card { height:5.35in; padding:.12in; background:#fff; }
+    .store-image { display:block; width:100%; height:5.11in; object-fit:contain; object-position:center; background:#F4F1EA; border-radius:.07in; }
+    .store-footer { display:grid; grid-template-columns:38% 62%; gap:.18in; align-items:center; margin-top:.14in; padding:.1in .14in; background:#fff; border-left:5px solid var(--orange); box-shadow:0 6px 14px rgba(82,32,0,.08); }
+    .sister-layout { display:grid; grid-template-columns:48% 52%; gap:.25in; height:5.55in; }
+    .sister-photo { height:5.55in; }
+    .sister-name-card { display:flex; flex-direction:column; justify-content:center; padding:.32in; background:linear-gradient(135deg,#fff,#FBF8F1); border-left:7px solid var(--orange); box-shadow:0 11px 24px rgba(70,25,0,.12); }
+    .sister-name-card span { color:var(--muted); font-size:8pt; font-weight:900; letter-spacing:.13em; }
+    .sister-name-card strong { margin-top:.15in; color:var(--red); font-size:27pt; line-height:1.05; overflow-wrap:anywhere; }
+    .sister-name-card p { margin-top:.25in; color:var(--muted); font-size:10pt; line-height:1.35; }
+
+.store-footer strong { display:block; margin-top:.025in; color:var(--red); font-size:11pt; }
+.store-footer p { margin:0; color:var(--muted); font-size:8.5pt; }
+    .commercial { display:grid; grid-template-columns:64% 36%; gap:.3in; }
+    .commercial .data-table { font-size:8.2pt; }
+    .financial-layout { height:5.68in; }
+    .financial-photo-card { height:5.68in; padding:.14in; background:#fff; border-radius:.11in; box-shadow:0 11px 24px rgba(70,25,0,.14); }
+    .financial-image { display:block; width:100%; height:5.25in; object-fit:contain; object-position:center; background:#F4F1EA; border-radius:.07in; }
+
+.commercial p { font-size:9pt; line-height:1.35; }
+.empty-note { padding:.16in; color:#999; font-size:8pt; }
+.image-placeholder { display:flex; align-items:center; justify-content:center; min-height:1in; color:#9A8D7D; background:repeating-linear-gradient(135deg,#F4F0E8 0,#F4F0E8 10px,#EEE8DD 10px,#EEE8DD 20px); font-size:8pt; font-weight:800; letter-spacing:.06em; text-transform:uppercase; }
+
+    .micro-grid { display:grid; grid-template-columns:repeat(3,1fr); grid-auto-rows:2.55in; gap:.14in; height:5.7in; }
+    .micro-grid.count-1 { grid-template-columns:1fr; }
+    .micro-grid.count-2 { grid-template-columns:repeat(2,1fr); }
+    .micro-grid.count-4 { grid-template-columns:repeat(2,1fr); }
+    .micro-grid.count-5 { grid-template-columns:repeat(3,1fr); }
+    .micro-photo { display:block; width:100%; height:100%; min-height:0; object-fit:cover; border-radius:.08in; box-shadow:0 8px 18px rgba(70,25,0,.15); }
+    .pilot-grid { display:grid; grid-template-columns:1fr 1fr; gap:.25in; height:5.65in; }
+    .pilot-card { min-width:0; overflow:hidden; background:#fff; border-radius:.1in; box-shadow:0 11px 24px rgba(70,25,0,.14); }
+    .pilot-photo { display:block; width:100%; height:5.65in; object-fit:cover; }
+
+@media screen {
+    body { padding:28px 0; }
+    .slide { margin:0 auto 28px; box-shadow:0 22px 55px rgba(0,0,0,.35); }
+    .slide:last-child { margin-bottom:0; }
+}
+@media print {
+    html, body { background:#fff; }
+    .slide { margin:0; box-shadow:none; break-after:page; page-break-after:always; break-inside:avoid; page-break-inside:avoid; }
+    .slide:last-child { break-after:auto !important; page-break-after:auto !important; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior:auto !important; } }
+'''
+
+    return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>OXXO | Presentación de expansión</title><style>' + css + '</style></head><body>' + ''.join(slides) + '</body></html>'
