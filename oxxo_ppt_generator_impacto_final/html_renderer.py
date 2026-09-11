@@ -221,6 +221,7 @@ def render(fields, sheets, images):
         ['Entrega de local', fields.get('delivery_date', '')],
         ['Apertura', fields.get('opening_date', '')],
     ], columns=['Hito', 'Fecha'])
+
     def build_generator_cards(group, fallback_images=False):
         source = fields.get(f'generator_{group}_cards', [])
         if not isinstance(source, list):
@@ -291,6 +292,18 @@ def render(fields, sheets, images):
         </div>
         <div class="general-conventions"><div class="panel-kicker">CONVENCIONES DE TIENDA</div>{conventions}</div>
     ''', number=2))
+
+    slides.append(slide('Solución de imagen', f'''
+        <div class="solution-photos two-photos">
+            <div>{media(images.get('solution_image_1'), 'photo-large', 'Carga la foto inicial del local', 'Foto inicial local')}</div>
+            <div>{media(images.get('solution_image_2'), 'photo-large', 'Carga la foto solución de imagen', 'Foto solución de imagen')}</div>
+        </div>
+        <div class="description">
+            <h3>Descripción del punto</h3>
+            <p>{text(fields.get('point_description', ''), 'Sin descripción registrada.')}</p>
+        </div>
+        {f'<div class="links">{links}</div>' if links else ''}
+    ''', number=3))
 
     for title, cards in [('Entorno | Generadores Vivienda', housing_cards), ('Entorno | Generadores Empleo', employment_cards)]:
         slides.append(slide(title, f'''
@@ -557,16 +570,3 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
 '''
 
     return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>OXXO | Presentación de expansión</title><style>' + css + '</style></head><body>' + ''.join(slides) + '</body></html>'
-
-
-
-def render_expansion(fields, images):
-    """Render the additional one-page expansion summary requested by the user."""
-    housing = float(fields.get('housing_300', 0) or 0)
-    jobs = float(fields.get('jobs_300', 0) or 0)
-    total = housing + jobs
-    project = text(fields.get('project_name', 'Nombre del punto'))
-    image = media(images.get('expansion_intelligence'), 'expansion-summary-image', 'Carga la foto de expansión', 'Foto de expansión')
-    return f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>OXXO | Expansión</title><style>
-@page{{size:13.333in 7.5in;margin:0}}*{{box-sizing:border-box}}body{{margin:0;background:#121212;font-family:Aptos,Arial,sans-serif;color:#252525}}.page{{width:13.333in;height:7.5in;padding:.55in 
-'''
