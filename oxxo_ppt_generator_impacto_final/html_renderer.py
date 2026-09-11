@@ -226,7 +226,7 @@ def render(fields, sheets, images):
         source = fields.get(f'generator_{group}_cards', [])
 if not isinstance(source, list):
             source = []
-       if not source:
+    if not source:
     source = fields.get("generator_cards", []) if isinstance(fields.get('generator_cards', []), list) else []
         cards_out = []
         for index, card in enumerate(source[:4], start=1):
