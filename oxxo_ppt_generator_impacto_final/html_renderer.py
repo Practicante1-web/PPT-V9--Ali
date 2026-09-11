@@ -586,8 +586,8 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
 .image-placeholder { display:flex; align-items:center; justify-content:center; min-height:1in; color:#9A8D7D; background:repeating-linear-gradient(135deg,#F4F0E8 0,#F4F0E8 10px,#EEE8DD 10px,#EEE8DD 20px); font-size:8pt; font-weight:800; letter-spacing:.06em; text-transform:uppercase; }
 
     .micro-grid { display:grid; grid-template-columns:repeat(3,1fr); grid-auto-rows:2.55in; gap:.14in; height:5.7in; }
-    .micro-grid.count-1 { grid-template-columns:1fr; }
-    .micro-grid.count-2 { grid-template-columns:repeat(2,1fr); }
+    .micro-grid.count-1 { grid-template-columns:1fr; grid-template-rows:1fr; grid-auto-rows:unset; height:5.7in; }
+    .micro-grid.count-2 { grid-template-columns:repeat(2,1fr); grid-template-rows:1fr; grid-auto-rows:unset; height:5.7in; }
     .micro-grid.count-4 { grid-template-columns:repeat(2,1fr); }
     .micro-grid.count-5 { grid-template-columns:repeat(3,1fr); }
     .micro-photo { display:block; width:100%; height:100%; min-height:0; object-fit:cover; border-radius:.08in; box-shadow:0 8px 18px rgba(70,25,0,.15); }
