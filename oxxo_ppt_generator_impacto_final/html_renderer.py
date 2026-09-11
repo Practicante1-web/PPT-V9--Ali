@@ -345,7 +345,6 @@ def render(fields, sheets, images):
     slides.append(slide('Layout · Capex', f'''
         <div class="single-asset-layout">
             <div class="asset-card single-asset-card">
-                <div class="asset-label">LAYOUT / CAPEX</div>
                 {media(images.get('layout_image'), 'asset-image', 'Carga la foto de layout / CAPEX', 'Layout y CAPEX')}
             </div>
         </div>
@@ -354,7 +353,7 @@ def render(fields, sheets, images):
 
     slides.append(slide('Tienda Hermana', f'''
         <div class="sister-layout">
-            <div class="store-card sister-photo"><div class="store-label">FOTO TIENDA HERMANA</div>{media(images.get('similar_image'), 'store-image', 'Carga la foto de la tienda espejo', 'Tienda espejo')}</div>
+            <div class="store-card sister-photo">{media(images.get('similar_image'), 'store-image', 'Carga la foto de la tienda espejo', 'Tienda espejo')}</div>
             <div class="sister-name-card"><span>TIENDA HERMANA SELECCIONADA</span><strong>{text(fields.get('book_store', 'Pendiente'))}</strong><p>{text(fields.get('similar_comments', ''), 'Sin comentarios adicionales')}</p></div>
         </div>
     ''', number=8))
@@ -362,7 +361,6 @@ def render(fields, sheets, images):
     slides.append(slide('Networks', f'''
         <div class="single-asset-layout">
             <div class="asset-card single-asset-card">
-                <div class="asset-label">NETWORKS</div>
                 {media(images.get('success_criteria_image'), 'asset-image', 'Carga la foto de Networks', 'Networks')}
             </div>
         </div>
