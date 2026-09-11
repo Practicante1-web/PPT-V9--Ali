@@ -15,7 +15,7 @@ ROOT = Path(__file__).parent
 IMAGE_KEYS = {
     'general_environment_image', 'expansion_map', 'solution_image_1', 'solution_image_2',
     'expansion_intelligence', 'layout_image', 'capex_image', 'internal_image',
-    'similar_image', 'operating_store_image', 'success_criteria_image',
+    'similar_image', 'similar_image_2', 'operating_store_image', 'success_criteria_image',
     'financial_viability_image',
     'microsaturation_image_1', 'microsaturation_image_2', 'microsaturation_image_3', 'microsaturation_image_4', 'microsaturation_image_5',
     'pilot_image_1', 'pilot_image_2',
@@ -435,6 +435,7 @@ with st.expander('Layout | Capex'):
 
 with st.expander('Tienda Hermana'):
     image_uploader('Foto Tienda Hermana', 'similar_image', 's8_similar')
+    image_uploader('Foto adicional Tienda Hermana', 'similar_image_2', 's8_similar_2')
     open_store_options = [''] + f.get('open_stores', [])
     saved_store = f.get('book_store', '') if f.get('book_store', '') in open_store_options else ''
     f['book_store'] = st.selectbox('Tienda abierta espejo — desde Book', open_store_options, index=open_store_options.index(saved_store), key='s8_open_store') if f.get('open_stores') else ''
