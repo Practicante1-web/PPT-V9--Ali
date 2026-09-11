@@ -11,7 +11,6 @@ import streamlit as st
 from data_model import read_book, values, filter_jun, summary_table
 from html_renderer import render
 
-
 ROOT = Path(__file__).parent
 IMAGE_KEYS = {
     'general_environment_image', 'expansion_map', 'solution_image_1', 'solution_image_2',
