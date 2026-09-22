@@ -352,13 +352,19 @@ def render(fields, sheets, images):
 
     if fields.get('microsaturation_enabled') == 'Sí':
         micro_present = [images.get(f'microsaturation_image_{i}') for i in range(1, 6) if images.get(f'microsaturation_image_{i}')]
-        count_class = f'count-{min(len(micro_present), 5)}' if micro_present else 'count-1'
-        micro_html = ''.join(
-            f'<img class="micro-photo" src="{image_src(im)}" alt="Foto de microsaturación">' for im in micro_present
-        ) or '<div class="empty-note">Registra fotos de microsaturación para visualizarlas aquí.</div>'
-        slides.append(slide('Microsaturación adicional', f'''
-            <div class="micro-grid {count_class}">{micro_html}</div>
-        ''', number=None))
+        if micro_present:
+            for micro_image in micro_present:
+                slides.append(slide('Microsaturación adicional', f'''
+                    <div class="single-asset-layout">
+                        <div class="asset-card single-asset-card">
+                            <img class="asset-image" src="{image_src(micro_image)}" alt="Foto de microsaturación">
+                        </div>
+                    </div>
+                ''', number=None))
+        else:
+            slides.append(slide('Microsaturación adicional', '''
+                <div class="empty-note">Registra fotos de microsaturación para visualizarlas aquí.</div>
+            ''', number=None))
 
     slides.append(slide('Layout · Capex', f'''
         <div class="single-asset-layout">
@@ -629,7 +635,7 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
     .micro-grid.count-2 { grid-template-columns:repeat(2,1fr); grid-template-rows:1fr; grid-auto-rows:unset; height:5.7in; }
     .micro-grid.count-4 { grid-template-columns:repeat(2,1fr); }
     .micro-grid.count-5 { grid-template-columns:repeat(3,1fr); }
-    .micro-photo { display:block; width:100%; height:100%; min-height:0; object-fit:cover; border-radius:.08in; box-shadow:0 8px 18px rgba(70,25,0,.15); }
+    .micro-photo { display:block; width:100%; height:100%; min-height:0; object-fit:contain; object-position:center; background:#F4F1EA; border-radius:.08in; box-shadow:0 8px 18px rgba(70,25,0,.15); }
     .pilot-grid { display:grid; grid-template-columns:1fr 1fr; gap:.25in; height:5.65in; }
     .pilot-card { min-width:0; overflow:hidden; background:#fff; border-radius:.1in; box-shadow:0 11px 24px rgba(70,25,0,.14); }
     .pilot-photo { display:block; width:100%; height:5.65in; object-fit:cover; }
