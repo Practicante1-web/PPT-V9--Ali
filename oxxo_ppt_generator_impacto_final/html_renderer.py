@@ -379,7 +379,7 @@ def render(fields, sheets, images):
         <div class="sister-layout">
             <div class="store-card sister-photo">{media(images.get('similar_image'), 'store-image', 'Carga la foto de la tienda espejo', 'Tienda espejo')}</div>
             <div class="sister-right">
-                <div class="sister-name-card compact"><span>TIENDA HERMANA SELECCIONADA</span><strong>{text(fields.get('book_store', 'Pendiente'))}</strong><p>{text(fields.get('similar_comments', ''), 'Sin comentarios adicionales')}</p></div>
+                <div class="sister-name-card compact"><span>TIENDA HERMANA SELECCIONADA</span><strong>{text(fields.get('book_store', 'Pendiente'))}</strong><p>{text(fields.get('similar_comments', ''), 'Sin comentarios adicionales')}</p>{f'<div class="links">{link("Link Tienda Hermana", fields.get("similar_store_link"))}</div>' if fields.get('similar_store_link') else ''}</div>
                 <div class="sister-secondary-photo">{media(images.get('similar_image_2'), 'sister-secondary-image', 'Carga una foto adicional', 'Foto adicional tienda hermana')}</div>
             </div>
         </div>
