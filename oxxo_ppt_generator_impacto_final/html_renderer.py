@@ -2,7 +2,10 @@ from base64 import b64encode
 from datetime import date
 from html import escape
 from io import BytesIO
+import math
+import re
 
+import numpy as np
 import pandas as pd
 from PIL import Image
 
@@ -156,6 +159,142 @@ def financial_slide(data):
     ''', number=11)
 
 
+# --- Tiendas más cercanas al punto (por coordenadas) ---------------------------------
+
+_LAT_NAMES = {'Y', 'LAT', 'LATITUD', 'LATITUDE', 'COORD Y', 'COORDENADA Y', 'COORDY', 'LATITUD Y', 'Y COORD', 'Y COORDENADA'}
+_LON_NAMES = {'X', 'LON', 'LONG', 'LNG', 'LONGITUD', 'LONGITUDE', 'COORD X', 'COORDENADA X', 'COORDX', 'LONGITUD X', 'X COORD', 'X COORDENADA'}
+_LAT_RANGE = (-5.0, 14.0)    # rango de latitudes de Colombia
+_LON_RANGE = (-82.0, -66.0)  # rango de longitudes de Colombia (negativas)
+
+
+def _to_number(value):
+    """Convierte números o textos con coma/punto decimal ('4,7229', '-74.04') a float; NaN si no se puede."""
+    if value is None:
+        return float('nan')
+    if isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, bool):
+        return float(value)
+    text = str(value).strip().replace(' ', '')
+    if not text:
+        return float('nan')
+    if ',' in text and '.' in text:
+        text = text.replace(',', '')
+    else:
+        text = text.replace(',', '.')
+    try:
+        return float(text)
+    except ValueError:
+        return float('nan')
+
+
+def _fix_longitude(series):
+    """En Colombia la longitud es negativa: si llega positiva (66 a 82) se le cambia el signo."""
+    return series.where(~series.between(66.0, 82.0), -series)
+
+
+def _valid_pairs(lat, lon):
+    return lat.between(*_LAT_RANGE) & _fix_longitude(lon).between(*_LON_RANGE)
+
+
+def parse_coordinates(value):
+    """Lee 'latitud, longitud' escrito a mano o copiado de Google Maps. Devuelve (lat, lon) o None."""
+    if value is None:
+        return None
+    tokens = re.findall(r'-?\d+(?:[.,]\d+)?', str(value))
+    if len(tokens) != 2:
+        return None
+    lat, lon = (_to_number(token) for token in tokens)
+    if abs(lat) > 40 and abs(lon) <= 40:  # vinieron al revés (longitud, latitud)
+        lat, lon = lon, lat
+    if 66.0 <= lon <= 82.0:
+        lon = -lon
+    if not (_LAT_RANGE[0] <= lat <= _LAT_RANGE[1] and _LON_RANGE[0] <= lon <= _LON_RANGE[1]):
+        return None
+    return lat, lon
+
+
+def _normalize_name(name):
+    return re.sub(r'[\s_\-\.]+', ' ', str(name)).strip().upper()
+
+
+def _orientation(df, lat_col, lon_col):
+    """Devuelve (lat_col, lon_col) en el orden correcto según los valores, o None si no parecen coordenadas."""
+    first = df[lat_col].map(_to_number)
+    second = df[lon_col].map(_to_number)
+    straight = int(_valid_pairs(first, second).sum())
+    swapped = int(_valid_pairs(second, first).sum())
+    if straight == 0 and swapped == 0:
+        return None
+    return (lat_col, lon_col) if straight >= swapped else (lon_col, lat_col)
+
+
+def _detect_by_values(df):
+    """Plan B: si los encabezados no se reconocen, busca columnas cuyos valores parezcan coordenadas."""
+    numeric = {}
+    for column in df.columns:
+        values = df[column].map(_to_number)
+        present = values.dropna()
+        if len(present) < 5 or (present % 1 != 0).mean() < 0.8:
+            continue
+        numeric[column] = values
+    lon_col = next(
+        (column for column, values in numeric.items() if values.dropna().between(*_LON_RANGE).mean() >= 0.6),
+        None,
+    )
+    if lon_col is None:
+        return None, None
+    lon_present = numeric[lon_col].notna()
+    lat_col, best = None, 0.0
+    for column, values in numeric.items():
+        if column == lon_col or values.dropna().between(*_LAT_RANGE).mean() < 0.6:
+            continue
+        overlap = float((values.notna() & lon_present).sum()) / max(int(lon_present.sum()), 1)
+        if overlap > best:
+            lat_col, best = column, overlap
+    if lat_col is None or best < 0.8:
+        return None, None
+    return lat_col, lon_col
+
+
+def find_coordinate_columns(df):
+    """Busca en el Book las columnas de latitud (Y) y longitud (X). Devuelve (lat_col, lon_col) o (None, None)."""
+    if df is None or len(df) == 0:
+        return None, None
+    df = df.loc[:, ~df.columns.duplicated()]
+    lat_col = lon_col = None
+    for column in df.columns:
+        name = _normalize_name(column)
+        if lat_col is None and name in _LAT_NAMES:
+            lat_col = column
+        elif lon_col is None and name in _LON_NAMES:
+            lon_col = column
+    if lat_col is not None and lon_col is not None:
+        result = _orientation(df, lat_col, lon_col)
+        if result:
+            return result
+    return _detect_by_values(df)
+
+
+def _haversine_m(lat1, lon1, lat2, lon2):
+    """Distancia en metros entre un punto y un arreglo de puntos."""
+    earth_radius = 6371000.0
+    phi1, phi2 = np.radians(lat1), np.radians(lat2)
+    a = np.sin((phi2 - phi1) / 2) ** 2 + np.cos(phi1) * np.cos(phi2) * np.sin(np.radians(lon2 - lon1) / 2) ** 2
+    return 2 * earth_radius * np.arcsin(np.sqrt(a))
+
+
+def nearest_stores(df, point, lat_col, lon_col, limit=5):
+    """Tiendas con coordenadas válidas, de la más cercana a la más lejana al punto (máximo `limit`)."""
+    work = df.loc[:, ~df.columns.duplicated()].reset_index(drop=True)
+    lat = work[lat_col].map(_to_number)
+    lon = _fix_longitude(work[lon_col].map(_to_number))
+    valid = lat.between(*_LAT_RANGE) & lon.between(*_LON_RANGE)
+    if not valid.any():
+        return work.iloc[0:0]
+    work = work.loc[valid].copy()
+    work['_DIST_M'] = _haversine_m(point[0], point[1], lat[valid].to_numpy(), lon[valid].to_numpy())
+    return work.sort_values('_DIST_M', kind='stable').head(limit).drop(columns=['_DIST_M'])
+
+
 def render(fields, sheets, images):
     jun = sheets.get('JUN', pd.DataFrame()).copy()
     city = fields.get('city', '')
@@ -195,6 +334,38 @@ def render(fields, sheets, images):
     tmc = d[d['TIE27'].astype(str).str.upper().str.contains('TMCB', na=False)] if 'TIE27' in d else d.iloc[0:0]
     exp = d[d['TIE27'].astype(str).str.upper().str.contains('EXP', na=False)] if 'TIE27' in d else d.iloc[0:0]
     combined = pd.concat([tmc, exp], ignore_index=True)
+
+    project_point = parse_coordinates(fields.get('project_coordinates'))
+    lat_col, lon_col = find_coordinate_columns(jun)
+    use_distance = bool(project_point and lat_col and lon_col)
+    coords_label = ', '.join(format(v, '.6f').rstrip('0').rstrip('.') for v in project_point) if project_point else ''
+
+    def nearest_table(df):
+        """Devuelve (tabla_html, estado, n_filas). Estado: 'cercanas', 'vacia' o 'sin_orden'."""
+        def view(frame):
+            return table_html(frame[cols].rename(columns=rename), 'data-table compact-table')
+        if df.empty:
+            return view(df), 'vacia', 0
+        if use_distance:
+            ranked = nearest_stores(df, project_point, lat_col, lon_col, limit=5)
+            if not ranked.empty:
+                return view(ranked), 'cercanas', len(ranked)
+        shown = df.head(5)
+        return view(shown), 'sin_orden', len(shown)
+
+    tmc_table, tmc_state, tmc_n = nearest_table(tmc)
+    exp_table, exp_state, exp_n = nearest_table(exp)
+
+    def nearest_label(state, n):
+        return f' <span>· {n} más cercana{"" if n == 1 else "s"}</span>' if state == 'cercanas' else ''
+
+    tmc_label = nearest_label(tmc_state, tmc_n)
+    exp_label = nearest_label(exp_state, exp_n)
+    general_note = (
+        '<div class="general-note"><b>IMPORTANTE:</b> Las tiendas TMCB y EXP que aparecen en las tablas son las más cercanas '
+        'al punto potencial (máximo 5 por tabla). Los promedios (<strong>Venta promedio, Renta promedio y Costo m² promedio</strong>) '
+        'corresponden a todas las tiendas ubicadas en la UPZ del punto potencial.</div>'
+    )
 
     def avg(df, column):
         return df[column].mean() if column in df and not df.empty else None
@@ -275,6 +446,7 @@ def render(fields, sheets, images):
                 <h2>OXXO {text(fields.get('project_name', 'Nombre del punto'))}</h2>
                 <p class="sub">{city_name} <span>·</span> {upz_name}</p>
                 <p class="address">{('<b>' + text(fields.get('address', '')) + '</b> ') if fields.get('address') else ''}{link('Ver en Maps', fields.get('maps_link'))}</p>
+                {f'<p class="cover-coords">Coordenadas: {coords_label}</p>' if coords_label else ''}
                 <p class="tag">{text(fields.get('regional', 'Centro'))} <span>·</span> Segmento {text(fields.get('segment', 'Base'))}</p>
                 <p class="meta">Especialista: {text(fields.get('specialist', ''))}<br>Creada: {text(fields.get('created_at', date.today().strftime('%d/%m/%Y')))}</p>
             </div>
@@ -295,8 +467,8 @@ def render(fields, sheets, images):
             </div>
             <div class="general-right">
                 <div class="panel-kicker">MEZCLA DE MERCADO</div>{table_html(pct_df, 'data-table compact-table')}
-                <div class="general-tables"><div class="table-card red-accent"><h3>Tiendas TMCB</h3>{table_html(tmc[cols].head(4).rename(columns=rename), 'data-table compact-table')}</div><div class="table-card blue-accent"><h3>Tiendas EXP</h3>{table_html(exp[cols].head(4).rename(columns=rename), 'data-table compact-table')}</div></div>
-                <div class="general-kpis"><div><span>Venta promedio</span><strong>{money(avg(combined, 'VENTAS OUM_NUM'))}</strong></div><div><span>Renta promedio</span><strong>{money(avg(combined, 'RENTA UM_NUM'))}</strong></div><div><span>Costo m² promedio</span><strong>{money(avg(combined, 'COSTO M2_NUM'))}</strong></div></div>
+                <div class="general-tables"><div class="table-card red-accent"><h3>Tiendas TMCB{tmc_label}</h3>{tmc_table}</div><div class="table-card blue-accent"><h3>Tiendas EXP{exp_label}</h3>{exp_table}</div></div>
+                <div class="general-kpis"><div><span>Venta promedio</span><strong>{money(avg(combined, 'VENTAS OUM_NUM'))}</strong></div><div><span>Renta promedio</span><strong>{money(avg(combined, 'RENTA UM_NUM'))}</strong></div><div><span>Costo m² promedio</span><strong>{money(avg(combined, 'COSTO M2_NUM'))}</strong></div></div>{general_note}
             </div>
         </div>
         <div class="general-conventions"><div class="panel-kicker">CONVENCIONES DE TIENDA</div>{conventions}</div>
@@ -426,18 +598,19 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
 .cover .sub span, .cover .tag span { color:var(--orange); }
 .cover .address { min-height:.25in; margin:.14in 0; font-size:11pt; }
 .cover .tag { color:var(--red); font-size:12pt; font-weight:900; }
+.cover .cover-coords { margin:-.06in 0 .14in; color:var(--muted); font-size:10pt; font-weight:700; }
 .cover .meta { margin-top:.82in; color:#4f4f4f; font-size:10pt; line-height:1.45; }
 .cover-art { position:relative; height:5.7in; overflow:hidden; }
 .cover-art:before { content:''; position:absolute; inset:.48in .12in .25in .42in; border:1px solid rgba(255,255,255,.45); border-radius:50% 50% 45% 55%; transform:rotate(-15deg); }
 .cover-art-ring { position:absolute; width:3.55in; height:3.55in; right:.1in; top:.48in; border:26px solid rgba(255,255,255,.18); border-radius:50%; }
 .cover-art-mark { position:absolute; right:.28in; top:2.15in; width:2.7in; filter:drop-shadow(0 10px 20px rgba(0,0,0,.25)); }
 .cover-art-line { position:absolute; right:.5in; bottom:1.05in; width:2.1in; height:.12in; background:var(--orange); transform:rotate(-7deg); }
-.context-row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:.16in; margin:-.02in 0 .17in; }
+.context-row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:.16in; margin:-.02in 0 .12in; }
 .context-row > div { min-height:.57in; padding:.1in .14in; background:#fff; border-left:4px solid var(--red); box-shadow:0 6px 16px rgba(82,16,0,.1); }
 .context-row span, .kpi-grid span, .plan-kpis span, .store-footer span { display:block; color:var(--muted); font-size:7pt; font-weight:800; letter-spacing:.09em; text-transform:uppercase; }
 .context-row strong { display:block; margin-top:.035in; color:var(--ink); font-size:12.5pt; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .environment-layout { display:grid; grid-template-columns:61% 39%; gap:.25in; height:5.52in; }
-    .general-layout { display:grid; grid-template-columns:43% 57%; gap:.22in; height:4.35in; }
+    .general-layout { display:grid; grid-template-columns:43% 57%; gap:.22in; min-height:4.35in; }
     .general-layout .environment-visual { height:4.35in; }
     .general-layout .environment-photo { height:3.73in; }
     .general-right { min-width:0; }
@@ -446,7 +619,9 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
     .general-kpis > div { min-width:0; padding:.06in .07in; background:linear-gradient(135deg,#fff,#FBF8F1); border-left:3px solid var(--red); box-shadow:0 4px 10px rgba(82,32,0,.08); }
     .general-kpis span { display:block; color:var(--muted); font-size:5.8pt; font-weight:900; letter-spacing:.045em; line-height:1.05; text-transform:uppercase; }
     .general-kpis strong { display:block; margin-top:.025in; color:var(--red); font-size:11pt; line-height:1; white-space:nowrap; }
-    .general-conventions { margin-top:.12in; padding:.045in .06in .04in; background:#fff; border-top:2px solid var(--orange); box-shadow:0 4px 10px rgba(82,32,0,.06); }
+    .general-note { margin-top:.08in; padding:.045in .09in; background:linear-gradient(135deg,#FFF2D8,#FFE9C9); border-left:4px solid var(--orange); color:#704817; font-size:7.2pt; line-height:1.3; }
+    .general-note b { color:var(--red); letter-spacing:.06em; }
+    .general-conventions { margin-top:.08in; padding:.045in .06in .04in; background:#fff; border-top:2px solid var(--orange); box-shadow:0 4px 10px rgba(82,32,0,.06); }
     .general-conventions .panel-kicker { margin:0 0 .03in; }
     .general-conventions .convention-legend { grid-template-columns:repeat(8, minmax(0, 1fr)); gap:.035in; }
     .general-conventions .convention-item { padding:.012in .02in .016in; }
@@ -469,6 +644,11 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
 .compact-table { font-size:7.35pt; }
 .compact-table th { font-size:6.8pt; padding:.07in .055in; }
 .compact-table td { padding:.062in .055in; }
+.table-card .compact-table th { padding:.06in .035in; font-size:6.4pt; }
+.general-right > .compact-table th { padding:.05in .055in; }
+.general-right > .compact-table td { padding:.04in .055in; }
+.table-card .compact-table td { padding:.04in .035in; white-space:nowrap; }
+.table-card .compact-table td:first-child { white-space:normal; }
 .legend-block { margin-top:.19in; padding-top:.13in; border-top:1px solid var(--line); }
 .legend { display:flex; flex-wrap:wrap; gap:.095in .12in; font-size:8.4pt; }
 .convention-legend { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:.035in; }
