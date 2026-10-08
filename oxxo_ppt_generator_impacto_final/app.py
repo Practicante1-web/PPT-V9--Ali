@@ -9,7 +9,7 @@ from pathlib import Path
 import streamlit as st
 
 from data_model import read_book, values, filter_jun, summary_table
-from html_renderer import render
+from html_renderer import render, parse_coordinates, find_coordinate_columns
 
 ROOT = Path(__file__).parent
 IMAGE_KEYS = {
@@ -156,10 +156,11 @@ def restore_images(imported_images):
 SPECIALISTS = [
     'ANDRES DUQUE RESTREPO', 'JURY CAROLINA GONZALEZ GOMEZ', 'JENNY ACUNA ROJAS',
     'LINA DIAZ ORTIZ', 'MARTHA LILIANA LOPEZ CANDAMIL', 'JORGE GRANADOS',
-    'CARLOS BOLAÑOS DIAZ', 'ALEJANDRA ROJAS ROMERO', 'ELVIA JAIMES VELASQUEZ',
+    'CARLOS BOLAÑOS DIAZ', 'ALEJANDRA ROJAS ROMERO',
     'LAURA SOFÍA VECINO MARRUGO', 'TATIANA NIÑO CRUZ', 'DANIEL FELIPE ALVAREZ',
     'STEFANIA BABATIVA MORENO', 'SEBASTIAN APONTE CARVAJAL', 'VALENTINA VALENCIA',
-    'JHON ESPINOZA', 'JAIME GUTIERREZ PEREZ',
+    'JAIME GUTIERREZ PEREZ', 'CRISTIAN FORERO', 'DIANA BAUTISTA',
+    'LINA PARRA', 'MATEO RIOS', 'FELIPE VASQUEZ',
 ]
 GENERATOR_TYPES = ['Administrativo', 'Residencial', 'Comercial', 'Industrial', 'Educativo', 'Salud', 'Transporte masivo']
 YES_NO = ['SI', 'NO']
@@ -178,6 +179,7 @@ FORM_WIDGET_DEFAULTS = {
     's2_new_city': ('new_city', ''),
     's2_new_upz': ('new_upz', ''),
     's2_comments': ('plan_comments', ''),
+    's2_coords': ('project_coordinates', ''),
     's3_comments': ('plan_comments', ''),
     's4_desc': ('point_description', ''),
     's4_location': ('location_link', ''),
@@ -380,6 +382,26 @@ with st.expander('General'):
     upz_default = f.get('upz', '') if f.get('upz', '') in upz_options else ''
     upz = st.selectbox('UPZ / comuna', upz_options, index=upz_options.index(upz_default), key='book_upz')
     f.update({'city': city, 'upz': upz})
+    f['project_coordinates'] = st.text_input(
+        'Coordenadas del punto (latitud, longitud) *',
+        f.get('project_coordinates', ''),
+        key='s2_coords',
+        placeholder='Ej: 4.7229, -74.044754',
+        help='OBLIGATORIO. Cópialas desde Google Maps (clic derecho sobre el punto). Sirven con punto o con coma decimal. '
+             'Con ellas, las tablas TMCB y EXP muestran las tiendas más cercanas al punto (máximo 5 por tabla).',
+    )
+    coords_text = (f['project_coordinates'] or '').strip()
+    coords_ok = parse_coordinates(coords_text) is not None
+    if not coords_text:
+        st.warning('Obligatorio: escribe las coordenadas del punto. Sin ellas no se puede generar la presentación.')
+    elif not coords_ok:
+        st.warning('No pude leer las coordenadas. Usa el formato: 4.7229, -74.044754 (latitud, longitud).')
+    elif jun is not None:
+        coord_lat_col, coord_lon_col = find_coordinate_columns(jun)
+        if coord_lat_col is None:
+            st.warning('No encontré las columnas de coordenadas en el Book, así que las tablas no se ordenarán por cercanía.')
+        else:
+            st.caption(f'Cercanía calculada con las columnas «{coord_lat_col}» (latitud) y «{coord_lon_col}» (longitud) del Book.')
     image_uploader('Foto de entorno general', 'general_environment_image', 's2_img')
     if city == 'Ciudad nueva':
         f['new_city'] = st.text_input('Ciudad nueva / municipio', f.get('new_city', ''), key='s2_new_city')
@@ -506,7 +528,9 @@ with col_json:
         help='Guarda campos, selecciones e imágenes para restaurarlos después.',
     )
 with col_presentation:
-    generate = st.button('Generar presentación', type='primary', width='stretch')
+    generate = st.button('Generar presentación', type='primary', width='stretch', disabled=not coords_ok)
+if not coords_ok:
+    st.error('Falta la coordenada del punto (sección General → «Coordenadas del punto»). Es obligatoria para generar la presentación.')
 
 if generate:
     image_bytes = {key: as_bytes(value) for key, value in imgs.items()}
