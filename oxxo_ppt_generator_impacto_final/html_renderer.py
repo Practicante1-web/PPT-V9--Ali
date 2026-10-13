@@ -681,24 +681,49 @@ def render_with_info(fields, sheets, images):
     coords_label = ', '.join(format(v, '.6f').rstrip('0').rstrip('.') for v in project_point) if project_point else ''
 
     hambre_missing = []
+    fill_other_upz = bool(fields.get('fill_other_upz'))
+    # tiendas de otras UPZ de la misma ciudad: solo se usan si se pide completar las tablas
+    pool_source = city_df if not city_df.empty else jun
+    if fill_other_upz and andatti_active and 'NAME' in pool_source:
+        pool_source = pool_source.copy()
+        pool_names = pool_source['NAME'].astype(str)
+        pool_cities = pool_source['MUNICIPIO'].astype(str) if 'MUNICIPIO' in pool_source else pd.Series([''] * len(pool_source), index=pool_source.index)
+        pool_source['_HAMBRE'] = [lookup_hambre(andatti['lookup'], name, city) for name, city in zip(pool_names, pool_cities)]
 
-    def nearest_table(df):
-        """Devuelve (tabla_html, estado, n_filas). Estado: 'cercanas', 'vacia' o 'sin_orden'."""
+    def pool_of(kind):
+        if not fill_other_upz or 'TIE27' not in pool_source:
+            return None
+        return pool_source[pool_source['TIE27'].astype(str).str.upper().str.contains(kind, na=False)]
+
+    def nearest_table(df, pool=None):
+        """Devuelve (tabla_html, estado, n_filas, filas). Estado: 'cercanas', 'vacia' o 'sin_orden'."""
         def view(frame):
             if andatti_active and '_HAMBRE' in frame and 'NAME' in frame:
                 hambre_missing.extend(frame.loc[frame['_HAMBRE'].isna(), 'NAME'].astype(str).tolist())
-            return table_html(frame[cols].rename(columns=rename), 'data-table compact-table', clamp_first=len(frame) > 5)
-        if df.empty:
-            return view(df), 'vacia', 0, df
-        if use_distance:
+            shown_frame = frame
+            if '_FUERA' in frame:  # tienda de otra UPZ: se marca con asterisco
+                shown_frame = frame.copy()
+                shown_frame['NAME'] = [f'{name}\u00a0*' if outside else name for name, outside in zip(frame['NAME'].astype(str), frame['_FUERA'])]  # espacio que no se parte: el asterisco no queda solo en otra línea
+            return table_html(shown_frame[cols].rename(columns=rename), 'data-table compact-table', clamp_first=len(frame) > 5)
+        state = 'vacia' if df.empty else 'sin_orden'
+        shown = df.head(nearest_n)
+        if not df.empty and use_distance:
             ranked = nearest_stores(df, project_point, lat_col, lon_col, limit=nearest_n)
             if not ranked.empty:
-                return view(ranked), 'cercanas', len(ranked), ranked
-        shown = df.head(nearest_n)
-        return view(shown), 'sin_orden', len(shown), shown
+                shown, state = ranked, 'cercanas'
+        if pool is not None and use_distance and len(shown) < nearest_n:
+            others = pool.loc[~pool.index.isin(df.index)]
+            if not others.empty:
+                extra = nearest_stores(others, project_point, lat_col, lon_col, limit=nearest_n - len(shown))
+                if not extra.empty:
+                    shown = pd.concat([shown.assign(_FUERA=False), extra.assign(_FUERA=True)], ignore_index=True)
+                    state = 'cercanas'
+        return view(shown), state, len(shown), shown
 
-    tmc_table, tmc_state, tmc_n, tmc_shown = nearest_table(tmc)
-    exp_table, exp_state, exp_n, exp_shown = nearest_table(exp)
+    tmc_table, tmc_state, tmc_n, tmc_shown = nearest_table(tmc, pool_of('TMCB'))
+    exp_table, exp_state, exp_n, exp_shown = nearest_table(exp, pool_of('EXP'))
+    outside_shown = int(sum(bool(x) for x in tmc_shown.get('_FUERA', [])) + sum(bool(x) for x in exp_shown.get('_FUERA', [])))
+    outside_note = ' * Tienda de otra UPZ: la UPZ del punto potencial tiene menos tiendas que las solicitadas.' if outside_shown else ''
     rows_shown = max(tmc_n, exp_n)
     dense_class = '' if rows_shown <= 5 else (' dense dense-1' if rows_shown <= 7 else ' dense dense-2')
 
@@ -721,7 +746,7 @@ def render_with_info(fields, sheets, images):
         )
     general_note = (
         '<div class="general-note"><b>IMPORTANTE:</b> Las tiendas TMCB y EXP que aparecen en las tablas son las más cercanas '
-        f'al punto potencial (máximo {nearest_n} por tabla). {averages_note}{period_note}.</div>'
+        f'al punto potencial (máximo {nearest_n} por tabla). {averages_note}{period_note}.{outside_note}</div>'
     )
 
     def avg(df, column):
@@ -1240,7 +1265,10 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
 '''
 
     html_out = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>OXXO | Presentación de expansión</title><style>' + css + '</style></head><body>' + ''.join(slides) + '</body></html>'
-    return html_out, {'andatti': andatti_active, 'hambre_missing': list(dict.fromkeys(hambre_missing))}
+    return html_out, {
+        'andatti': andatti_active, 'hambre_missing': list(dict.fromkeys(hambre_missing)),
+        'requested': nearest_n, 'tmcb_in_upz': len(tmc), 'exp_in_upz': len(exp), 'tmcb_shown': tmc_n, 'exp_shown': exp_n, 'outside_shown': outside_shown,
+    }
 
 
 def render(fields, sheets, images):
