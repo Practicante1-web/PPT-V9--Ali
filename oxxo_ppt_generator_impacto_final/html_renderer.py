@@ -115,7 +115,7 @@ def text(value, fallback='—'):
     return escape(value if value else fallback)
 
 
-def table_html(df, classes="data-table"):
+def table_html(df, classes="data-table", clamp_first=False):
     if df is None or df.empty:
         return '<div class="empty-note">Sin registros para el filtro seleccionado.</div>'
 
@@ -125,12 +125,19 @@ def table_html(df, classes="data-table"):
         if column in df_display.columns:
             df_display[column] = df_display[column].apply(money)
 
+    formatters = None
+    if clamp_first:  # tablas largas: el nombre de la tienda se corta en 2 líneas como máximo, para que nada descuadre la diapositiva
+        formatters = {c: (lambda v: '' if pd.isna(v) else escape(str(v))) for c in df_display.columns}
+        formatters[df_display.columns[0]] = lambda v: f'<div class="cell-name">{escape(str(v))}</div>'
+
     return df_display.to_html(
         index=False,
         classes=classes,
         border=0,
         justify="left",
-        na_rep=""
+        na_rep="",
+        escape=formatters is None,
+        formatters=formatters,
     )
 
 def link(label, url):
@@ -664,6 +671,10 @@ def render_with_info(fields, sheets, images):
     exp = d[d['TIE27'].astype(str).str.upper().str.contains('EXP', na=False)] if 'TIE27' in d else d.iloc[0:0]
     combined = pd.concat([tmc, exp], ignore_index=True)
 
+    try:
+        nearest_n = max(5, min(int(fields.get('nearest_count') or 5), 10))
+    except (TypeError, ValueError):
+        nearest_n = 5
     project_point = parse_coordinates(fields.get('project_coordinates'))
     lat_col, lon_col = find_coordinate_columns(jun)
     use_distance = bool(project_point and lat_col and lon_col)
@@ -676,18 +687,20 @@ def render_with_info(fields, sheets, images):
         def view(frame):
             if andatti_active and '_HAMBRE' in frame and 'NAME' in frame:
                 hambre_missing.extend(frame.loc[frame['_HAMBRE'].isna(), 'NAME'].astype(str).tolist())
-            return table_html(frame[cols].rename(columns=rename), 'data-table compact-table')
+            return table_html(frame[cols].rename(columns=rename), 'data-table compact-table', clamp_first=len(frame) > 5)
         if df.empty:
             return view(df), 'vacia', 0, df
         if use_distance:
-            ranked = nearest_stores(df, project_point, lat_col, lon_col, limit=5)
+            ranked = nearest_stores(df, project_point, lat_col, lon_col, limit=nearest_n)
             if not ranked.empty:
                 return view(ranked), 'cercanas', len(ranked), ranked
-        shown = df.head(5)
+        shown = df.head(nearest_n)
         return view(shown), 'sin_orden', len(shown), shown
 
     tmc_table, tmc_state, tmc_n, tmc_shown = nearest_table(tmc)
     exp_table, exp_state, exp_n, exp_shown = nearest_table(exp)
+    rows_shown = max(tmc_n, exp_n)
+    dense_class = '' if rows_shown <= 5 else (' dense dense-1' if rows_shown <= 7 else ' dense dense-2')
 
     def nearest_label(state, n):
         return f' <span>· {n} más cercana{"" if n == 1 else "s"}</span>' if state == 'cercanas' else ''
@@ -708,7 +721,7 @@ def render_with_info(fields, sheets, images):
         )
     general_note = (
         '<div class="general-note"><b>IMPORTANTE:</b> Las tiendas TMCB y EXP que aparecen en las tablas son las más cercanas '
-        f'al punto potencial (máximo 5 por tabla). {averages_note}{period_note}.</div>'
+        f'al punto potencial (máximo {nearest_n} por tabla). {averages_note}{period_note}.</div>'
     )
 
     def avg(df, column):
@@ -821,14 +834,14 @@ def render_with_info(fields, sheets, images):
             <div><span>UPZ / comuna</span><strong>{upz_name}</strong></div>
             <div><span>Tiendas analizadas</span><strong>{number(analyzed_count)}</strong></div>
         </div>
-        <div class="general-layout">
+        <div class="general-layout{dense_class}">
             <div class="visual-card environment-visual">
                 {media(images.get('general_environment_image'), 'environment-photo', 'Carga una foto de entorno', 'Entorno general')}
                 <div class="visual-caption"><b>Lectura del entorno</b><span>Imagen principal del área de influencia</span></div>
             </div>
             <div class="general-right">
                 <div class="panel-kicker">MEZCLA DE MERCADO</div>{table_html(pct_df, 'data-table compact-table')}
-                <div class="general-tables"><div class="table-card red-accent"><h3>Tiendas TMCB{tmc_label}</h3>{tmc_table}</div><div class="table-card blue-accent"><h3>Tiendas EXP{exp_label}</h3>{exp_table}</div></div>
+                <div class="general-tables{dense_class}"><div class="table-card red-accent"><h3>Tiendas TMCB{tmc_label}</h3>{tmc_table}</div><div class="table-card blue-accent"><h3>Tiendas EXP{exp_label}</h3>{exp_table}</div></div>
                 {kpis_html}{general_note}
             </div>
         </div>
@@ -1012,6 +1025,36 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
 .general-right > .compact-table td { padding:.04in .055in; }
 .table-card .compact-table td { padding:.04in .035in; white-space:nowrap; }
 .table-card .compact-table td:first-child { white-space:normal; }
+/* Más de 5 tiendas por tabla: diseño compacto para que todo quepa y se vea ordenado */
+.general-layout.dense .environment-visual { height:auto; }
+.general-layout.dense .environment-photo { height:100%; }
+.general-layout.dense .general-tables { margin-top:.07in; }
+.general-layout.dense .general-kpis { margin-top:.07in; }
+.general-layout.dense .general-note { margin-top:.06in; }
+.general-layout.dense .general-right > .compact-table th { padding:.035in .055in; }
+.general-layout.dense .general-right > .compact-table td { padding:.026in .055in; }
+.general-layout.dense .table-card h3 { margin:0 .03in .05in; font-size:10pt; }
+.general-layout.dense-1 { grid-template-columns:41% 59%; }
+.general-layout.dense-1 .table-card { padding:.08in .08in .07in; }
+.general-layout.dense-1 .table-card .compact-table th { padding:.045in .03in; font-size:6.2pt; }
+.general-layout.dense-1 .table-card .compact-table td { padding:.03in .03in; font-size:7pt; line-height:1.1; }
+.general-layout.dense-2 { grid-template-columns:39% 61%; }
+.general-layout.dense-2 .table-card { padding:.07in .08in .06in; }
+.general-layout.dense-2 .table-card .compact-table th { padding:.04in .03in; font-size:6pt; }
+.general-layout.dense-2 .table-card .compact-table td { padding:.02in .03in; font-size:6.7pt; line-height:1.08; }
+.cell-name { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.general-layout.dense .general-right { display:flex; flex-direction:column; }
+.general-layout.dense .general-tables { flex:1 1 auto; }
+.general-layout.dense .table-card { display:flex; flex-direction:column; }
+.general-layout.dense .table-card .data-table { flex:1 1 auto; }
+.general-layout.dense-2 .table-card { padding:.06in .07in .05in; }
+.general-layout.dense-2 .table-card h3 { margin:0 .03in .04in; font-size:9.5pt; }
+.general-layout.dense-2 .table-card .compact-table th { padding:.032in .03in; }
+.general-layout.dense-2 .table-card .compact-table td { padding:.015in .03in; line-height:1.04; }
+.general-layout.dense-2 .general-right > .compact-table td { padding:.018in .055in; }
+.general-layout.dense-2 .general-kpis > div { padding:.045in .07in; }
+.general-layout.dense-2 .general-note { padding:.035in .09in; margin-top:.05in; line-height:1.25; }
+.general-layout.dense-2 .general-tables, .general-layout.dense-2 .general-kpis { margin-top:.055in; }
 .legend-block { margin-top:.19in; padding-top:.13in; border-top:1px solid var(--line); }
 .legend { display:flex; flex-wrap:wrap; gap:.095in .12in; font-size:8.4pt; }
 .convention-legend { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:.035in; }
