@@ -4,6 +4,8 @@ from html import escape
 from io import BytesIO
 import math
 import re
+import unicodedata
+import datetime as _dt
 
 import numpy as np
 import pandas as pd
@@ -83,7 +85,10 @@ def media(data, cls, label, alt):
 
 def money(value):
     try:
-        return '$ {:,.0f}'.format(float(value)).replace(',', 'X').replace('.', ',').replace('X', '.')
+        number = float(value)
+        if math.isnan(number):
+            return '—'
+        return '$ {:,.0f}'.format(number).replace(',', 'X').replace('.', ',').replace('X', '.')
     except Exception:
         return '—'
 
@@ -116,7 +121,7 @@ def table_html(df, classes="data-table"):
 
     df_display = df.copy()
 
-    for column in ["Ventas último mes", "Renta último mes", "Costo m²"]:
+    for column in ["Ventas último mes", "Venta promedio (HAMBRE)", "Renta último mes", "Costo m²"]:
         if column in df_display.columns:
             df_display[column] = df_display[column].apply(money)
 
@@ -295,7 +300,321 @@ def nearest_stores(df, point, lat_col, lon_col, limit=5):
     return work.sort_values('_DIST_M', kind='stable').head(limit).drop(columns=['_DIST_M'])
 
 
-def render(fields, sheets, images):
+# --- Formato Andatti: ventas de HAMBRE desde el Excel de Power BI ---------------------
+
+_MONTH_NAMES = {
+    'ENE': 1, 'ENERO': 1, 'FEB': 2, 'FEBRERO': 2, 'MAR': 3, 'MARZO': 3, 'ABR': 4, 'ABRIL': 4,
+    'MAY': 5, 'MAYO': 5, 'JUN': 6, 'JUNIO': 6, 'JUL': 7, 'JULIO': 7, 'AGO': 8, 'AGOSTO': 8,
+    'SEP': 9, 'SEPT': 9, 'SET': 9, 'SEPTIEMBRE': 9, 'OCT': 10, 'OCTUBRE': 10,
+    'NOV': 11, 'NOVIEMBRE': 11, 'DIC': 12, 'DICIEMBRE': 12,
+}
+_MONTH_LONG = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto',
+               'septiembre', 'octubre', 'noviembre', 'diciembre']
+_MONTH_SHORT = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
+
+
+def _strip_accents(value):
+    return ''.join(ch for ch in unicodedata.normalize('NFKD', str(value)) if not unicodedata.combining(ch))
+
+
+def _is_blank(value):
+    if value is None:
+        return True
+    try:
+        if bool(pd.isna(value)):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return isinstance(value, str) and not value.strip()
+
+
+def _norm_header(value):
+    if _is_blank(value):
+        return ''
+    return re.sub(r'\s+', ' ', _strip_accents(value).upper()).strip()
+
+
+def split_store_name(name):
+    """'Lago Percales (Bog)' -> ('LAGO PERCALES', 'BOG'): nombre normalizado y sufijo de ciudad."""
+    text = _strip_accents(name).upper()
+    suffixes = re.findall(r'\(([^)]*)\)', text)
+    base = re.sub(r'\([^)]*\)', ' ', text)
+    base = re.sub(r'[^A-Z0-9]+', ' ', base).strip()
+    suffix = re.sub(r'[^A-Z]+', '', suffixes[-1]) if suffixes else ''
+    return base, suffix
+
+
+def parse_month(value):
+    """Devuelve (año o None, mes 1-12) a partir de un número, fecha o texto ('Sep', 'Septiembre 2026', '2026-09'); None si no es un mes."""
+    if _is_blank(value):
+        return None
+    if isinstance(value, (_dt.datetime, _dt.date)):  # incluye pd.Timestamp
+        return (value.year, value.month)
+    if isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, bool):
+        number = float(value)
+        if number == int(number) and 1 <= int(number) <= 12:
+            return (None, int(number))
+        return None
+    text = _strip_accents(value).strip().upper()
+    found = re.fullmatch(r'(\d{4})[-/ ](\d{1,2})(?:[-/ ]\d{1,2})?(?:[ T].*)?', text)
+    if found and 1 <= int(found.group(2)) <= 12:
+        return (int(found.group(1)), int(found.group(2)))
+    found = re.fullmatch(r'(\d{1,2})[-/ ](\d{4})', text)
+    if found and 1 <= int(found.group(1)) <= 12:
+        return (int(found.group(2)), int(found.group(1)))
+    found = re.fullmatch(r'([A-Z]+)[\s\-/.]*(?:DE\s+)?(\d{4}|\d{2})?', text)
+    if found and found.group(1) in _MONTH_NAMES:
+        year = None
+        if found.group(2):
+            year = int(found.group(2))
+            if len(found.group(2)) == 2:
+                year += 2000
+        return (year, _MONTH_NAMES[found.group(1)])
+    if re.fullmatch(r'\d{1,2}', text) and 1 <= int(text) <= 12:
+        return (None, int(text))
+    return None
+
+
+def _parse_amount(value):
+    """Número desde una celda numérica o texto tipo '$ 52.345' / '1.234,5'. NaN si no se puede."""
+    if value is None:
+        return float('nan')
+    if isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, bool):
+        return float(value)
+    text = str(value).strip().replace('$', '').replace(' ', '').replace('\xa0', '')
+    if not text or text in {'-', '—', 'N/A', 'NA', 'nan'}:
+        return float('nan')
+    negative = text.startswith('(') and text.endswith(')')
+    text = text.strip('()')
+    if ',' in text and '.' in text:
+        if text.rfind(',') > text.rfind('.'):
+            text = text.replace('.', '').replace(',', '.')
+        else:
+            text = text.replace(',', '')
+    elif '.' in text:
+        if re.fullmatch(r'-?\d{1,3}(\.\d{3})+', text):
+            text = text.replace('.', '')
+    elif ',' in text:
+        if re.fullmatch(r'-?\d{1,3}(,\d{3})+', text):
+            text = text.replace(',', '')
+        else:
+            text = text.replace(',', '.')
+    try:
+        number = float(text)
+    except ValueError:
+        return float('nan')
+    return -number if negative else number
+
+
+def month_label(month):
+    year, number = month
+    return f'{_MONTH_LONG[number - 1].capitalize()} {year}'
+
+
+def period_label(months):
+    """[(2026, 7), (2026, 8), (2026, 9)] -> 'jul–sep 2026'."""
+    if not months:
+        return ''
+    first, last = months[0], months[-1]
+    if len(months) == 1:
+        return f'{_MONTH_SHORT[last[1] - 1]} {last[0]}'
+    if first[0] == last[0]:
+        return f'{_MONTH_SHORT[first[1] - 1]}–{_MONTH_SHORT[last[1] - 1]} {last[0]}'
+    return f'{_MONTH_SHORT[first[1] - 1]} {first[0]}–{_MONTH_SHORT[last[1] - 1]} {last[0]}'
+
+
+_STORE_HEADERS = {'TIENDA', 'TIENDAS', 'NOMBRE TIENDA', 'NOMBRE DE TIENDA', 'STORE', 'ETIQUETAS DE FILA', 'ROW LABELS'}
+
+
+def parse_hambre_export(raw):
+    """Lee el Excel/CSV exportado de Power BI (tabla SIN encabezado, tal como sale de pandas con header=None).
+
+    Entiende tres formas: (1) larga: Tienda | Mes | ventas; (2) ancha: Tienda | un mes por columna;
+    (3) ya promediada: Tienda | un solo valor. Devuelve (tabla, info) con la tabla en columnas
+    store, year, month, value. Lanza ValueError con un mensaje claro si no reconoce el archivo."""
+    if raw is None or raw.empty:
+        raise ValueError('El archivo está vacío.')
+    raw = raw.dropna(how='all').dropna(axis=1, how='all').reset_index(drop=True)
+    if raw.empty:
+        raise ValueError('El archivo está vacío.')
+
+    header_row = 0
+    for position in range(min(len(raw), 25)):
+        cells = [_norm_header(v) for v in raw.iloc[position].tolist()]
+        if any(c in _STORE_HEADERS or c.startswith('TIENDA') for c in cells):
+            header_row = position
+            break
+    raw_headers = raw.iloc[header_row].tolist()
+    headers = [(_norm_header(v) or f'COLUMNA {i + 1}') for i, v in enumerate(raw_headers)]
+    body = raw.iloc[header_row + 1:].reset_index(drop=True)
+    body.columns = range(body.shape[1])
+    shown_headers = ', '.join(str(v) for v in raw_headers[:12] if not _is_blank(v))
+
+    def find_col(test):
+        return next((i for i, h in enumerate(headers) if test(h)), None)
+
+    store_i = find_col(lambda h: h in ('TIENDA', 'TIENDAS', 'NOMBRE TIENDA', 'NOMBRE DE TIENDA', 'STORE'))
+    if store_i is None:
+        store_i = find_col(lambda h: h in _STORE_HEADERS or h.startswith('TIENDA'))
+    if store_i is None:
+        raise ValueError(f'No encontré la columna de tiendas (busqué un encabezado «Tienda»). Encabezados que vi: {shown_headers}.')
+    month_i = find_col(lambda h: h in ('MES', 'MONTH', 'PERIODO', 'FECHA', 'MES ANO', 'ANO MES') or h.startswith('MES '))
+    year_i = find_col(lambda h: h in ('ANO', 'YEAR'))
+    reserved = {i for i in (store_i, month_i, year_i) if i is not None}
+
+    def numeric_share(i):
+        cells = [v for v in body[i].tolist() if not _is_blank(v)]
+        if not cells:
+            return 0.0
+        return sum(1 for v in cells if not math.isnan(_parse_amount(v))) / len(cells)
+
+    value_candidates = [i for i in range(body.shape[1]) if i not in reserved and numeric_share(i) >= 0.6]
+    sales_first = [i for i in value_candidates if 'VENTA' in headers[i]]
+
+    layout, month_cols, value_i = None, [], None
+    if month_i is not None:
+        layout = 'larga'
+        value_i = (sales_first or value_candidates or [None])[-1]
+        if value_i is None:
+            raise ValueError(f'Encontré tiendas y meses, pero no una columna de ventas con números. Encabezados que vi: {shown_headers}.')
+    else:
+        month_cols = [(i, parse_month(raw_headers[i])) for i in value_candidates if parse_month(raw_headers[i]) is not None
+                      and 'TOTAL' not in headers[i]]
+        if month_cols:
+            layout = 'ancha'
+        else:
+            layout = 'promedio'
+            value_i = (sales_first or value_candidates or [None])[0]
+            if value_i is None:
+                raise ValueError(f'No encontré columnas de ventas con números. Encabezados que vi: {shown_headers}.')
+
+    rows = []
+    for r in range(len(body)):
+        store = body.iat[r, store_i]
+        if _is_blank(store):
+            continue
+        store = str(store).strip()
+        base, _ = split_store_name(store)
+        if not base or base.startswith('TOTAL'):
+            continue
+        row_year = None
+        if year_i is not None:
+            parsed_year = _parse_amount(body.iat[r, year_i])
+            row_year = None if math.isnan(parsed_year) else int(parsed_year)
+        if layout == 'larga':
+            when = parse_month(body.iat[r, month_i])
+            value = _parse_amount(body.iat[r, value_i])
+            if when is not None and not math.isnan(value):
+                rows.append((store, when[0] or row_year, when[1], value))
+        elif layout == 'ancha':
+            for i, when in month_cols:
+                value = _parse_amount(body.iat[r, i])
+                if not math.isnan(value):
+                    rows.append((store, when[0] or row_year, when[1], value))
+        else:
+            value = _parse_amount(body.iat[r, value_i])
+            if not math.isnan(value):
+                rows.append((store, None, None, value))
+    if not rows:
+        raise ValueError(f'No encontré ventas válidas en el archivo. Encabezados que vi: {shown_headers}.')
+    table = pd.DataFrame(rows, columns=['store', 'year', 'month', 'value'])
+    info = {'layout': layout, 'store_column': str(raw_headers[store_i]),
+            'value_column': str(raw_headers[value_i]) if value_i is not None else 'un mes por columna',
+            'stores': int(table['store'].nunique())}
+    return table, info
+
+
+def available_months(table, default_year):
+    """Meses (año, mes) presentes en la tabla, de más antiguo a más reciente."""
+    if table.empty or table['month'].isna().all():
+        return []
+    months = set()
+    for year, month in zip(table['year'], table['month']):
+        if pd.isna(month):
+            continue
+        months.add((int(year) if not pd.isna(year) else int(default_year), int(month)))
+    return sorted(months)
+
+
+def hambre_window_average(table, cutoff, window=3, default_year=None):
+    """Promedio por tienda de los `window` meses que terminan en `cutoff` (año, mes).
+    Si a una tienda le faltan meses, se promedian los que tenga. Devuelve (tabla store/value, etiqueta del periodo)."""
+    if table['month'].isna().all():  # el archivo ya trae un solo valor por tienda
+        return table.groupby('store', sort=False)['value'].mean().reset_index(), 'según el archivo de Power BI'
+    year, month = cutoff
+    wanted = []
+    for step in range(window - 1, -1, -1):
+        m, y = month - step, year
+        while m < 1:
+            m += 12
+            y -= 1
+        wanted.append((y, m))
+    keys = []
+    for y, m in zip(table['year'], table['month']):
+        if pd.isna(m):
+            keys.append(None)
+        else:
+            keys.append(((int(y) if not pd.isna(y) else int(default_year)), int(m)))
+    inside = [key in wanted for key in keys]
+    averaged = table.loc[inside].groupby('store', sort=False)['value'].mean().reset_index()
+    present = sorted({key for key in keys if key in wanted})
+    return averaged, period_label(present or wanted)
+
+
+def store_name_variants(name):
+    """Formas en que se puede emparejar un nombre del archivo con el del Book:
+    'Lago Percales (Bog)' -> [('LAGO PERCALES', 'BOG')]
+    'Acacias Bog' (código de ciudad sin paréntesis) -> [('ACACIAS BOG', ''), ('ACACIAS', 'BOG')]."""
+    base, suffix = split_store_name(name)
+    variants = [(base, suffix)]
+    tokens = base.split()
+    if not suffix and len(tokens) > 1 and re.fullmatch(r'[A-Z]{1,4}', tokens[-1]):
+        variants.append((' '.join(tokens[:-1]), tokens[-1]))
+    return variants
+
+
+def build_hambre_lookup(averaged):
+    """{nombre normalizado: [(sufijo de ciudad, venta)]} para emparejar con las tiendas del Book."""
+    grouped = {}
+    for store, value in zip(averaged['store'], averaged['value']):
+        for key in store_name_variants(store):
+            grouped.setdefault(key, []).append(float(value))
+    lookup = {}
+    for (base, suffix), values in grouped.items():
+        lookup.setdefault(base, []).append((suffix, sum(values) / len(values)))
+    return lookup
+
+
+def _is_subsequence(short, long):
+    letters = iter(long)
+    return all(ch in letters for ch in short)
+
+
+def lookup_hambre(lookup, name, municipality=''):
+    """Venta de HAMBRE de una tienda del Book. Si el archivo trae el sufijo de ciudad ('(Bog)'), debe ser
+    compatible con el municipio del Book ('BOG' en 'BOGOTA'). NaN si no está, si la ciudad no coincide
+    o si el nombre es ambiguo."""
+    options = lookup.get(split_store_name(name)[0])
+    if not options:
+        return float('nan')
+    city = re.sub(r'[^A-Z]+', '', _strip_accents(municipality).upper())
+    compatible = [(suffix, value) for suffix, value in options if not suffix or not city or _is_subsequence(suffix, city)]
+    if len(compatible) == 1:
+        return compatible[0][1]
+    with_suffix = [value for suffix, value in compatible if suffix]
+    return with_suffix[0] if len(with_suffix) == 1 else float('nan')
+
+
+def count_hambre_matches(lookup, book):
+    """(tiendas del Book con dato de Hambre, total de tiendas del Book)."""
+    if book is None or len(book) == 0 or 'NAME' not in book:
+        return 0, 0
+    cities = book['MUNICIPIO'].astype(str) if 'MUNICIPIO' in book else [''] * len(book)
+    matched = sum(1 for name, city in zip(book['NAME'].astype(str), cities) if not math.isnan(lookup_hambre(lookup, name, city)))
+    return matched, len(book)
+
+
+def render_with_info(fields, sheets, images):
     jun = sheets.get('JUN', pd.DataFrame()).copy()
     city = fields.get('city', '')
     upz = fields.get('upz', '')
@@ -322,12 +641,22 @@ def render(fields, sheets, images):
         for value in ['RECESO', 'BASE', 'HOGAR']
     ])
 
-    cols = [c for c in ['NAME', 'SEG26', 'MESOP_NUM', 'VENTAS OUM_NUM', 'RENTA UM_NUM', 'COSTO M2_NUM'] if c in d]
+    andatti = fields.get('andatti') or {}
+    andatti_active = andatti.get('lookup') is not None
+    andatti_period = andatti.get('period_label') or ''
+    if andatti_active:
+        d = d.copy()
+        names = d['NAME'].astype(str) if 'NAME' in d else pd.Series([''] * len(d), index=d.index)
+        cities = d['MUNICIPIO'].astype(str) if 'MUNICIPIO' in d else pd.Series([''] * len(d), index=d.index)
+        d['_HAMBRE'] = [lookup_hambre(andatti['lookup'], name, city) for name, city in zip(names, cities)]
+    sales_col = '_HAMBRE' if andatti_active else 'VENTAS OUM_NUM'
+    cols = [c for c in ['NAME', 'SEG26', 'MESOP_NUM', sales_col, 'RENTA UM_NUM', 'COSTO M2_NUM'] if c in d]
     rename = {
         'NAME': 'Tienda',
         'SEG26': 'Segmento',
         'MESOP_NUM': 'Mesop',
         'VENTAS OUM_NUM': 'Ventas último mes',
+        '_HAMBRE': 'Venta promedio (HAMBRE)',
         'RENTA UM_NUM': 'Renta último mes',
         'COSTO M2_NUM': 'Costo m²',
     }
@@ -340,35 +669,67 @@ def render(fields, sheets, images):
     use_distance = bool(project_point and lat_col and lon_col)
     coords_label = ', '.join(format(v, '.6f').rstrip('0').rstrip('.') for v in project_point) if project_point else ''
 
+    hambre_missing = []
+
     def nearest_table(df):
         """Devuelve (tabla_html, estado, n_filas). Estado: 'cercanas', 'vacia' o 'sin_orden'."""
         def view(frame):
+            if andatti_active and '_HAMBRE' in frame and 'NAME' in frame:
+                hambre_missing.extend(frame.loc[frame['_HAMBRE'].isna(), 'NAME'].astype(str).tolist())
             return table_html(frame[cols].rename(columns=rename), 'data-table compact-table')
         if df.empty:
-            return view(df), 'vacia', 0
+            return view(df), 'vacia', 0, df
         if use_distance:
             ranked = nearest_stores(df, project_point, lat_col, lon_col, limit=5)
             if not ranked.empty:
-                return view(ranked), 'cercanas', len(ranked)
+                return view(ranked), 'cercanas', len(ranked), ranked
         shown = df.head(5)
-        return view(shown), 'sin_orden', len(shown)
+        return view(shown), 'sin_orden', len(shown), shown
 
-    tmc_table, tmc_state, tmc_n = nearest_table(tmc)
-    exp_table, exp_state, exp_n = nearest_table(exp)
+    tmc_table, tmc_state, tmc_n, tmc_shown = nearest_table(tmc)
+    exp_table, exp_state, exp_n, exp_shown = nearest_table(exp)
 
     def nearest_label(state, n):
         return f' <span>· {n} más cercana{"" if n == 1 else "s"}</span>' if state == 'cercanas' else ''
 
     tmc_label = nearest_label(tmc_state, tmc_n)
     exp_label = nearest_label(exp_state, exp_n)
+    if andatti_active:
+        period_note = f': promedio de los últimos 3 meses ({andatti_period})' if andatti_period else ''
+        averages_note = (
+            'Los promedios (<strong>Venta promedio (HAMBRE) TMCB, Venta promedio (HAMBRE) EXP, Renta promedio y Costo m² promedio</strong>) '
+            'corresponden <strong>solo a las tiendas que salen en la tabla</strong>'
+        )
+    else:
+        period_note = ''
+        averages_note = (
+            'Los promedios (<strong>Venta promedio, Renta promedio y Costo m² promedio</strong>) '
+            'corresponden a todas las tiendas ubicadas en la UPZ del punto potencial'
+        )
     general_note = (
         '<div class="general-note"><b>IMPORTANTE:</b> Las tiendas TMCB y EXP que aparecen en las tablas son las más cercanas '
-        'al punto potencial (máximo 5 por tabla). Los promedios (<strong>Venta promedio, Renta promedio y Costo m² promedio</strong>) '
-        'corresponden a todas las tiendas ubicadas en la UPZ del punto potencial.</div>'
+        f'al punto potencial (máximo 5 por tabla). {averages_note}{period_note}.</div>'
     )
 
     def avg(df, column):
         return df[column].mean() if column in df and not df.empty else None
+
+    if andatti_active:
+        shown_all = pd.concat([tmc_shown, exp_shown], ignore_index=True)
+        kpis_html = (
+            '<div class="general-kpis kpis-4">'
+            f'<div><span>Venta promedio (HAMBRE) TMCB</span><strong>{money(avg(tmc_shown, "_HAMBRE"))}</strong></div>'
+            f'<div><span>Venta promedio (HAMBRE) EXP</span><strong>{money(avg(exp_shown, "_HAMBRE"))}</strong></div>'
+            f'<div><span>Renta promedio</span><strong>{money(avg(shown_all, "RENTA UM_NUM"))}</strong></div>'
+            f'<div><span>Costo m² promedio</span><strong>{money(avg(shown_all, "COSTO M2_NUM"))}</strong></div></div>'
+        )
+    else:
+        kpis_html = (
+            '<div class="general-kpis">'
+            f'<div><span>Venta promedio</span><strong>{money(avg(combined, "VENTAS OUM_NUM"))}</strong></div>'
+            f'<div><span>Renta promedio</span><strong>{money(avg(combined, "RENTA UM_NUM"))}</strong></div>'
+            f'<div><span>Costo m² promedio</span><strong>{money(avg(combined, "COSTO M2_NUM"))}</strong></div></div>'
+        )
 
     project_area = float(fields.get('project_area', 0) or 0)
     project_rent = float(fields.get('project_rent', 0) or 0)
@@ -468,7 +829,7 @@ def render(fields, sheets, images):
             <div class="general-right">
                 <div class="panel-kicker">MEZCLA DE MERCADO</div>{table_html(pct_df, 'data-table compact-table')}
                 <div class="general-tables"><div class="table-card red-accent"><h3>Tiendas TMCB{tmc_label}</h3>{tmc_table}</div><div class="table-card blue-accent"><h3>Tiendas EXP{exp_label}</h3>{exp_table}</div></div>
-                <div class="general-kpis"><div><span>Venta promedio</span><strong>{money(avg(combined, 'VENTAS OUM_NUM'))}</strong></div><div><span>Renta promedio</span><strong>{money(avg(combined, 'RENTA UM_NUM'))}</strong></div><div><span>Costo m² promedio</span><strong>{money(avg(combined, 'COSTO M2_NUM'))}</strong></div></div>{general_note}
+                {kpis_html}{general_note}
             </div>
         </div>
         <div class="general-conventions"><div class="panel-kicker">CONVENCIONES DE TIENDA</div>{conventions}</div>
@@ -619,6 +980,8 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
     .general-kpis > div { min-width:0; padding:.06in .07in; background:linear-gradient(135deg,#fff,#FBF8F1); border-left:3px solid var(--red); box-shadow:0 4px 10px rgba(82,32,0,.08); }
     .general-kpis span { display:block; color:var(--muted); font-size:5.8pt; font-weight:900; letter-spacing:.045em; line-height:1.05; text-transform:uppercase; }
     .general-kpis strong { display:block; margin-top:.025in; color:var(--red); font-size:11pt; line-height:1; white-space:nowrap; }
+    .general-kpis.kpis-4 { grid-template-columns:repeat(4,1fr); }
+    .general-kpis.kpis-4 span { white-space:normal; }
     .general-note { margin-top:.08in; padding:.045in .09in; background:linear-gradient(135deg,#FFF2D8,#FFE9C9); border-left:4px solid var(--orange); color:#704817; font-size:7.2pt; line-height:1.3; }
     .general-note b { color:var(--red); letter-spacing:.06em; }
     .general-conventions { margin-top:.08in; padding:.045in .06in .04in; background:#fff; border-top:2px solid var(--orange); box-shadow:0 4px 10px rgba(82,32,0,.06); }
@@ -833,4 +1196,10 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior:auto !important; } }
 '''
 
-    return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>OXXO | Presentación de expansión</title><style>' + css + '</style></head><body>' + ''.join(slides) + '</body></html>'
+    html_out = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>OXXO | Presentación de expansión</title><style>' + css + '</style></head><body>' + ''.join(slides) + '</body></html>'
+    return html_out, {'andatti': andatti_active, 'hambre_missing': list(dict.fromkeys(hambre_missing))}
+
+
+def render(fields, sheets, images):
+    """Compatibilidad: devuelve solo el HTML."""
+    return render_with_info(fields, sheets, images)[0]
