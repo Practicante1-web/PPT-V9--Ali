@@ -192,6 +192,7 @@ FORM_WIDGET_DEFAULTS = {
     's2_comments': ('plan_comments', ''),
     's2_coords': ('project_coordinates', ''),
     's2_nearest_count': ('nearest_count', 5),
+    's2_fill_upz': ('fill_other_upz', False),
     's3_comments': ('plan_comments', ''),
     's4_desc': ('point_description', ''),
     's4_location': ('location_link', ''),
@@ -493,6 +494,13 @@ with st.expander('General'):
         help='Mínimo 5 y máximo 10. Con más de 5 tiendas, las tablas de la diapositiva General se muestran en modo compacto.',
     )
 
+    f['fill_other_upz'] = st.checkbox(
+        'Si la UPZ tiene menos tiendas, completar con las más cercanas de otras UPZ',
+        value=bool(f.get('fill_other_upz', False)), key='s2_fill_upz',
+        help='Normalmente las tablas solo muestran tiendas de la UPZ del punto. Si la UPZ tiene menos tiendas de las que pides, esta opción agrega '
+             'las más cercanas de otras UPZ de la misma ciudad y las marca con un asterisco (*).',
+    )
+
     andatti_active = False
     andatti_payload = None
     andatti_blocker = ''
@@ -707,6 +715,13 @@ if generate:
     missing_hambre = render_info.get('hambre_missing') or []
     if missing_hambre:
         st.warning('Estas tiendas de las tablas no tienen venta de HAMBRE en el archivo y salen con «—»: ' + ', '.join(missing_hambre) + '.')
+    requested = render_info.get('requested') or 0
+    if render_info.get('tmcb_shown', 0) < requested or render_info.get('exp_shown', 0) < requested:
+        st.info(
+            f"En la UPZ del punto hay {render_info.get('tmcb_in_upz', 0)} tienda(s) TMCB y {render_info.get('exp_in_upz', 0)} EXP en el Book, y pediste {requested} por tabla. "
+            + ('Aun completando con otras UPZ de la ciudad no hay más tiendas.' if f.get('fill_other_upz')
+               else 'Para ver más, marca «Si la UPZ tiene menos tiendas, completar con las más cercanas de otras UPZ».')
+        )
     st.download_button(
         'Descargar presentación principal',
         html.encode('utf-8'),
