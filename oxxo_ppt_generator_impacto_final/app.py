@@ -191,6 +191,7 @@ FORM_WIDGET_DEFAULTS = {
     's2_new_upz': ('new_upz', ''),
     's2_comments': ('plan_comments', ''),
     's2_coords': ('project_coordinates', ''),
+    's2_nearest_count': ('nearest_count', 5),
     's3_comments': ('plan_comments', ''),
     's4_desc': ('point_description', ''),
     's4_location': ('location_link', ''),
@@ -484,6 +485,13 @@ with st.expander('General'):
             st.warning('No encontré las columnas de coordenadas en el Book, así que las tablas no se ordenarán por cercanía.')
         else:
             st.caption(f'Cercanía calculada con las columnas «{coord_lat_col}» (latitud) y «{coord_lon_col}» (longitud) del Book.')
+
+    f['nearest_count'] = st.slider(
+        'Tiendas por tabla (TMCB y EXP más cercanas al punto)',
+        min_value=5, max_value=10, step=1, key='s2_nearest_count',
+        value=min(10, max(5, int(f.get('nearest_count') or 5))),
+        help='Mínimo 5 y máximo 10. Con más de 5 tiendas, las tablas de la diapositiva General se muestran en modo compacto.',
+    )
 
     andatti_active = False
     andatti_payload = None
