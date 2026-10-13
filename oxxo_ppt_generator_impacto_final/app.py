@@ -1,15 +1,24 @@
 from base64 import b64decode, b64encode
 from datetime import date, datetime, timezone
 import hashlib
+import hmac
+import io
 import json
 import math
 import re
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import pandas as pd
+import requests
 import streamlit as st
 
 from data_model import read_book, values, filter_jun, summary_table
-from html_renderer import render, parse_coordinates, find_coordinate_columns
+from html_renderer import (
+    render_with_info, parse_coordinates, find_coordinate_columns,
+    parse_hambre_export, available_months, hambre_window_average, build_hambre_lookup,
+    count_hambre_matches, month_label,
+)
 
 ROOT = Path(__file__).parent
 IMAGE_KEYS = {
@@ -160,8 +169,10 @@ SPECIALISTS = [
     'LAURA SOFÍA VECINO MARRUGO', 'TATIANA NIÑO CRUZ', 'DANIEL FELIPE ALVAREZ',
     'STEFANIA BABATIVA MORENO', 'SEBASTIAN APONTE CARVAJAL', 'VALENTINA VALENCIA',
     'JAIME GUTIERREZ PEREZ', 'CRISTIAN FORERO', 'DIANA BAUTISTA',
-    'LINA PARRA', 'MATEO RIOS', 'FELIPE VASQUEZ',
+    'LINA PARRA', 'MATEO RIOS', 'FELIPE VASQUEZ', 'DEERLY CALDERON',
 ]
+# Especialistas del formato Andatti (ventas solo de HAMBRE): ven el bloque «Formato Andatti» y necesitan la clave.
+ANDATTI_SPECIALISTS = ('LAURA SOFÍA VECINO MARRUGO', 'DEERLY CALDERON')
 GENERATOR_TYPES = ['Administrativo', 'Residencial', 'Comercial', 'Industrial', 'Educativo', 'Salud', 'Transporte masivo']
 YES_NO = ['SI', 'NO']
 IPC_OPTIONS = ['PLANO', '+1', '+2', '+3']
@@ -296,6 +307,77 @@ def image_uploader(label, key, widget_key):
         st.image(st.session_state.images[key], caption='Vista previa de la imagen recuperada', width='stretch')
 
 
+def andatti_key_status(entered):
+    """'ok', 'wrong' o 'not_configured'. La clave vive en los Secrets de Streamlit Cloud (andatti_key), NUNCA en el código."""
+    try:
+        expected = st.secrets.get('andatti_key')
+    except Exception:  # no hay secrets configurados
+        expected = None
+    if not expected:
+        return 'not_configured'
+    return 'ok' if hmac.compare_digest(str(entered or '').encode('utf-8'), str(expected).encode('utf-8')) else 'wrong'
+
+
+def hambre_url_from_secrets():
+    """Enlace compartido del Excel de HAMBRE (clave «hambre_url» en los Secrets de Streamlit Cloud, NO en el código)."""
+    try:
+        url = st.secrets.get('hambre_url')
+    except Exception:  # no hay secrets configurados
+        url = None
+    return str(url).strip() if url else ''
+
+
+def sharepoint_download_url(url):
+    """Agrega download=1 al enlace compartido para que SharePoint entregue el archivo y no la página de vista previa."""
+    parts = urlsplit(url)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != 'download']
+    query.append(('download', '1'))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+@st.cache_data(ttl=900, show_spinner='Descargando las ventas de HAMBRE…')
+def download_hambre(url):
+    """Descarga el Excel del enlace compartido (se vuelve a descargar cada 15 minutos). Lanza ValueError con un mensaje claro si no se puede."""
+    try:
+        response = requests.get(sharepoint_download_url(url), timeout=40, allow_redirects=True,
+                                headers={'User-Agent': 'Mozilla/5.0 (generador-presentaciones-oxxo)'})
+    except requests.RequestException as exc:
+        raise ValueError(f'No hubo conexión con el enlace ({type(exc).__name__}).') from exc
+    if response.status_code != 200:
+        raise ValueError(f'El enlace respondió con error {response.status_code}. ¿Venció o dejó de ser público?')
+    data = response.content
+    if len(data) > 60_000_000:
+        raise ValueError('El archivo del enlace es demasiado grande.')
+    if not data.startswith(b'PK'):  # un .xlsx es un archivo zip
+        raise ValueError('El enlace devolvió una página web en vez del Excel. ¿Pide iniciar sesión o ya no es público?')
+    return data
+
+
+def project_hambre_file():
+    """Archivo de ventas de HAMBRE guardado junto a app.py (como el Book.xlsx), si existe."""
+    for name in ('Hambre.xlsx', 'Hambre.csv'):
+        path = ROOT / name
+        if path.exists():
+            return path
+    return None
+
+
+@st.cache_data(show_spinner=False)
+def read_hambre_file(name, data):
+    """Lee el Excel (.xlsx) o CSV exportado de Power BI como tabla cruda, sin encabezado."""
+    buffer = io.BytesIO(data)
+    if str(name).lower().endswith('.csv'):
+        last_error = None
+        for encoding in ('utf-8-sig', 'latin-1'):
+            try:
+                buffer.seek(0)
+                return pd.read_csv(buffer, header=None, sep=None, engine='python', encoding=encoding, dtype=object)
+            except UnicodeDecodeError as exc:
+                last_error = exc
+        raise ValueError(f'No pude leer el CSV: {last_error}')
+    return pd.read_excel(buffer, header=None, dtype=object)
+
+
 if 'fields' not in st.session_state:
     st.session_state.fields = {'created_at': date.today().strftime('%d/%m/%Y')}
 if 'images' not in st.session_state:
@@ -402,6 +484,78 @@ with st.expander('General'):
             st.warning('No encontré las columnas de coordenadas en el Book, así que las tablas no se ordenarán por cercanía.')
         else:
             st.caption(f'Cercanía calculada con las columnas «{coord_lat_col}» (latitud) y «{coord_lon_col}» (longitud) del Book.')
+
+    andatti_active = False
+    andatti_payload = None
+    andatti_blocker = ''
+    if f.get('specialist') in ANDATTI_SPECIALISTS:
+        st.divider()
+        st.markdown('**Formato Andatti — ventas solo de HAMBRE**')
+        andatti_key = st.text_input('Clave del formato Andatti', type='password', key='s2_andatti_key')
+        key_status = andatti_key_status(andatti_key)
+        if key_status == 'not_configured':
+            st.info('El formato Andatti todavía no está habilitado: falta configurar la clave «andatti_key» en los Secrets de Streamlit Cloud.')
+        elif key_status == 'wrong':
+            if andatti_key:
+                st.error('Clave incorrecta.')
+            else:
+                st.caption('Escribe la clave para usar el formato Andatti. Sin ella, la presentación sale en formato tradicional (ventas totales).')
+        elif st.checkbox('Presentación de formato Andatti (ventas solo HAMBRE)', value=True, key='s2_andatti_on'):
+            project_file = project_hambre_file()
+            hambre_url = hambre_url_from_secrets()
+            andatti_file = st.file_uploader(
+                'Otro Excel de Power BI (opcional: reemplaza al archivo automático)' if (project_file is not None or hambre_url)
+                else 'Excel exportado de Power BI (ventas de HAMBRE por tienda y mes)',
+                type=['xlsx', 'csv'], key='s2_andatti_file',
+            )
+            source_name, source_bytes, source_label = None, None, ''
+            if andatti_file is not None:
+                source_name, source_bytes, source_label = andatti_file.name, andatti_file.getvalue(), 'archivo subido'
+            else:
+                if hambre_url:
+                    try:
+                        source_name, source_bytes, source_label = 'Hambre.xlsx', download_hambre(hambre_url), 'enlace de SharePoint'
+                    except ValueError as exc:
+                        st.warning(f'No pude descargar el archivo del enlace de SharePoint. {exc}'
+                                   + (' Uso el archivo del proyecto.' if project_file is not None else ''))
+                if source_bytes is None and project_file is not None:
+                    source_name, source_bytes, source_label = project_file.name, project_file.read_bytes(), f'archivo del proyecto ({project_file.name})'
+            if source_bytes is None:
+                andatti_blocker = 'Sube el Excel de Power BI con las ventas de HAMBRE, o desactiva el formato Andatti.'
+            else:
+                try:
+                    hambre_table, hambre_info = parse_hambre_export(read_hambre_file(source_name, source_bytes))
+                except Exception as exc:
+                    st.error(f'No pude leer el {source_label}. {exc}')
+                    andatti_blocker = f'El {source_label} de Power BI no se pudo leer.'
+                else:
+                    if hambre_info['stores'] < 10:
+                        st.warning(f"El archivo trae solo {hambre_info['stores']} tienda(s). Si deberían ser muchas, revisa que la tabla dinámica no tenga un filtro de tienda puesto.")
+                    this_year = date.today().year
+                    month_options = available_months(hambre_table, this_year)
+                    cutoff = None
+                    if month_options:
+                        previous = (this_year, date.today().month - 1) if date.today().month > 1 else (this_year - 1, 12)
+                        cutoff = st.selectbox(
+                            'Mes de corte (se promedian ese mes y los 2 anteriores)', month_options,
+                            index=month_options.index(previous) if previous in month_options else len(month_options) - 1,
+                            format_func=month_label, key='s2_andatti_cutoff',
+                        )
+                        if cutoff == (this_year, date.today().month):
+                            st.warning('El mes de corte es el mes en curso y está incompleto.')
+                    averaged, period = hambre_window_average(hambre_table, cutoff, window=3, default_year=this_year)
+                    hambre_lookup = build_hambre_lookup(averaged)
+                    matched, total = count_hambre_matches(hambre_lookup, jun) if jun is not None else (0, 0)
+                    data_until = f' Datos hasta {month_label(month_options[-1])}.' if month_options else ''
+                    st.caption(
+                        f"Fuente: {source_label}. Tiendas en «{hambre_info['store_column']}», ventas en «{hambre_info['value_column']}».{data_until} "
+                        f"Periodo: {period}. {matched} de {total} tiendas del Book tienen venta de HAMBRE."
+                    )
+                    if jun is not None and matched == 0:
+                        andatti_blocker = 'Ninguna tienda del archivo de Power BI coincide con las tiendas del Book. Revisa que sea el reporte correcto.'
+                    else:
+                        andatti_payload = {'lookup': hambre_lookup, 'period_label': period}
+                        andatti_active = True
     image_uploader('Foto de entorno general', 'general_environment_image', 's2_img')
     if city == 'Ciudad nueva':
         f['new_city'] = st.text_input('Ciudad nueva / municipio', f.get('new_city', ''), key='s2_new_city')
@@ -528,15 +682,23 @@ with col_json:
         help='Guarda campos, selecciones e imágenes para restaurarlos después.',
     )
 with col_presentation:
-    generate = st.button('Generar presentación', type='primary', width='stretch', disabled=not coords_ok)
+    generate = st.button('Generar presentación', type='primary', width='stretch', disabled=(not coords_ok) or bool(andatti_blocker))
+if andatti_blocker:
+    st.error(andatti_blocker)
+if f.get('specialist') in ANDATTI_SPECIALISTS:
+    st.caption('Modo de la presentación: **formato Andatti — ventas solo HAMBRE**.' if andatti_active else 'Modo de la presentación: formato tradicional (ventas totales).')
 if not coords_ok:
     st.error('Falta la coordenada del punto (sección General → «Coordenadas del punto»). Es obligatoria para generar la presentación.')
 
 if generate:
     image_bytes = {key: as_bytes(value) for key, value in imgs.items()}
-    html = render(f, sheets, image_bytes)
+    render_fields = {**f, 'andatti': andatti_payload} if andatti_active else f
+    html, render_info = render_with_info(render_fields, sheets, image_bytes)
     slide_count = 13 if f.get('microsaturation_enabled') == 'Sí' else 12
     st.success(f'Presentación generada con {slide_count} secciones.')
+    missing_hambre = render_info.get('hambre_missing') or []
+    if missing_hambre:
+        st.warning('Estas tiendas de las tablas no tienen venta de HAMBRE en el archivo y salen con «—»: ' + ', '.join(missing_hambre) + '.')
     st.download_button(
         'Descargar presentación principal',
         html.encode('utf-8'),
