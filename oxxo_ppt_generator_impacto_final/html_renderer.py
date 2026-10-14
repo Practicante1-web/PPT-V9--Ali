@@ -6,6 +6,7 @@ import math
 import re
 import unicodedata
 import datetime as _dt
+import difflib
 
 import numpy as np
 import pandas as pd
@@ -346,6 +347,9 @@ def split_store_name(name):
     text = _strip_accents(name).upper()
     suffixes = re.findall(r'\(([^)]*)\)', text)
     base = re.sub(r'\([^)]*\)', ' ', text)
+    if not suffixes and '(' in base:  # paréntesis sin cerrar (nombre cortado a 20 caracteres): 'ALMACENTRO (MEDELLIN'
+        base, _, tail = base.partition('(')
+        suffixes = [tail]
     base = re.sub(r'[^A-Z0-9]+', ' ', base).strip()
     suffix = re.sub(r'[^A-Z]+', '', suffixes[-1]) if suffixes else ''
     return base, suffix
@@ -580,15 +584,90 @@ def store_name_variants(name):
     return variants
 
 
+# --- Similitud de nombres (solo se usa cuando el nombre exacto no aparece) --------------------
+# Reglas: el nombre debe ser el MISMO, solo escrito distinto: las mismas palabras en el mismo orden, los números idénticos,
+# la ciudad compatible y una única tienda posible. Las abreviaturas de calle y los nombres cortados a 20 caracteres se toleran.
+_ABBREV = {
+    'CR': 'CRA', 'KR': 'CRA', 'KRA': 'CRA', 'CARR': 'CRA', 'CARRERA': 'CRA',
+    'CL': 'CALLE', 'CLL': 'CALLE',
+    'AVDA': 'AV', 'AVENIDA': 'AV',
+    'DG': 'DIAG', 'DIAGONAL': 'DIAG',
+    'TV': 'TRANSV', 'TRV': 'TRANSV', 'TRANSVERSAL': 'TRANSV',
+    'INT': 'INTERNACIONAL', 'INTL': 'INTERNACIONAL', 'INTERNAC': 'INTERNACIONAL',
+}
+_FILLER = {'DE', 'DEL', 'Y'}  # los artículos (El, La, Las, Los) SÍ cuentan: «Las Palmas» y «Palmas» son tiendas distintas
+
+
+def _fuzzy_tokens(base):
+    return [_ABBREV.get(t, t) for t in base.split() if t not in _FILLER]
+
+
+def _token_similarity(file_token, book_token, cut_word=False, allow_typo=False):
+    """Parecido entre dos palabras: 1.0 si son la misma (o abreviaturas conocidas), 0 si no se parecen lo suficiente."""
+    if file_token == book_token:
+        return 1.0
+    if file_token.isdigit() or book_token.isdigit():
+        return 0.0  # los números deben ser idénticos
+    if len(file_token) <= 3 or len(book_token) <= 3:
+        return 0.0  # palabras muy cortas: solo si son idénticas
+    if cut_word and len(file_token) >= 4 and book_token.startswith(file_token):
+        return 0.97  # la última palabra del nombre del archivo quedó cortada
+    if not allow_typo or len(file_token) < 7 or len(book_token) < 7:
+        return 0.0  # una letra distinta solo se tolera en palabras largas y dentro de nombres de 2 o más palabras
+    ratio = difflib.SequenceMatcher(None, file_token, book_token).ratio()
+    return ratio if ratio >= 0.9 else 0.0
+
+
+def _names_similarity(file_tokens, book_tokens, truncated):
+    """Parecido entre el nombre del archivo y el del Book (0 si no son el mismo nombre)."""
+    count = len(file_tokens)
+    if count == 0 or not book_tokens:
+        return 0.0
+    if truncated:  # el archivo corta los nombres a 20 caracteres: el Book puede seguir después del corte
+        if len(book_tokens) < count:
+            return 0.0
+        pairs = list(zip(file_tokens, book_tokens[:count]))
+    else:
+        if len(book_tokens) != count:
+            return 0.0
+        pairs = list(zip(file_tokens, book_tokens))
+    sims = []
+    for position, (file_token, book_token) in enumerate(pairs):
+        sim = _token_similarity(file_token, book_token, cut_word=truncated and position == count - 1, allow_typo=count >= 2)
+        if sim == 0.0:
+            return 0.0
+        sims.append(sim)
+    if sum(1 for sim in sims if sim < 1.0) > 1:
+        return 0.0  # como máximo UNA palabra puede ser «parecida»; todas las demás deben ser idénticas
+    weights = [max(len(book_token), 1) for _, book_token in pairs]
+    score = sum(s * w for s, w in zip(sims, weights)) / sum(weights)
+    return score if score >= (0.94 if count <= 2 else 0.90) else 0.0
+
+
+class HambreLookup(dict):
+    """{nombre normalizado: [(sufijo de ciudad, venta, nombre en el archivo)]} más un índice para la búsqueda por similitud."""
+    def __init__(self):
+        super().__init__()
+        self.entries = []
+        self.index = {}
+
+
 def build_hambre_lookup(averaged):
-    """{nombre normalizado: [(sufijo de ciudad, venta)]} para emparejar con las tiendas del Book."""
-    grouped = {}
+    grouped, originals = {}, {}
     for store, value in zip(averaged['store'], averaged['value']):
         for key in store_name_variants(store):
             grouped.setdefault(key, []).append(float(value))
-    lookup = {}
+            originals.setdefault(key, str(store))
+    lookup = HambreLookup()
     for (base, suffix), values in grouped.items():
-        lookup.setdefault(base, []).append((suffix, sum(values) / len(values)))
+        lookup.setdefault(base, []).append((suffix, sum(values) / len(values), originals[(base, suffix)]))
+    for store, value in zip(averaged['store'], averaged['value']):
+        truncated = len(str(store).strip()) >= 20
+        for base, suffix in store_name_variants(store):
+            tokens = _fuzzy_tokens(base)
+            if tokens:
+                lookup.entries.append({'name': str(store), 'value': float(value), 'tokens': tokens, 'suffix': suffix, 'truncated': truncated})
+                lookup.index.setdefault(tokens[0][:2], []).append(len(lookup.entries) - 1)
     return lookup
 
 
@@ -597,28 +676,102 @@ def _is_subsequence(short, long):
     return all(ch in letters for ch in short)
 
 
-def lookup_hambre(lookup, name, municipality=''):
-    """Venta de HAMBRE de una tienda del Book. Si el archivo trae el sufijo de ciudad ('(Bog)'), debe ser
-    compatible con el municipio del Book ('BOG' en 'BOGOTA'). NaN si no está, si la ciudad no coincide
-    o si el nombre es ambiguo."""
+def prepare_book_names(names):
+    """Nombres del Book normalizados: sirven para que una tienda del archivo no se le asigne a dos tiendas distintas del Book."""
+    prepared = {}
+    for name in names:
+        base, _ = split_store_name(name)
+        if base and base not in prepared:
+            prepared[base] = _fuzzy_tokens(base)
+    return prepared
+
+
+def _lookup_exact(lookup, name, municipality=''):
+    """(venta, nombre en el archivo) si el nombre aparece IGUAL en el archivo; si no, (NaN, '')."""
     options = lookup.get(split_store_name(name)[0])
     if not options:
-        return float('nan')
+        return float('nan'), ''
     city = re.sub(r'[^A-Z]+', '', _strip_accents(municipality).upper())
-    compatible = [(suffix, value) for suffix, value in options if not suffix or not city or _is_subsequence(suffix, city)]
+    compatible = [option for option in options if not option[0] or not city or _is_subsequence(option[0], city)]
     if len(compatible) == 1:
-        return compatible[0][1]
-    with_suffix = [value for suffix, value in compatible if suffix]
-    return with_suffix[0] if len(with_suffix) == 1 else float('nan')
+        return compatible[0][1], compatible[0][2]
+    with_suffix = [option for option in compatible if option[0]]
+    return (with_suffix[0][1], with_suffix[0][2]) if len(with_suffix) == 1 else (float('nan'), '')
+
+
+def _lookup_similar(lookup, name, municipality='', book_names=None):
+    """(venta, nombre en el archivo, parecido) si hay UNA sola tienda del archivo con el mismo nombre escrito distinto; si no, None."""
+    entries = getattr(lookup, 'entries', None)
+    if not entries:
+        return None
+    base, _ = split_store_name(name)
+    tokens = _fuzzy_tokens(base)
+    if not tokens:
+        return None
+    city = re.sub(r'[^A-Z]+', '', _strip_accents(municipality).upper())
+    found = {}
+    for position in lookup.index.get(tokens[0][:2], []):
+        entry = entries[position]
+        if entry['suffix'] and city and not _is_subsequence(entry['suffix'], city):
+            continue  # la ciudad del archivo no corresponde a la del Book
+        score = _names_similarity(entry['tokens'], tokens, entry['truncated'])
+        if score and score > found.get(entry['name'], (0, None))[0]:
+            found[entry['name']] = (score, entry)
+    if not found:
+        return None
+    best = sorted(found.values(), key=lambda item: -item[0])
+    if len(best) > 1 and not (best[0][0] == 1.0 and best[1][0] < 1.0):
+        return None  # hay más de una tienda posible: no se adivina
+    score, entry = best[0]
+    if book_names:  # la misma tienda del archivo no puede ser de dos tiendas distintas del Book
+        for other_base, other_tokens in book_names.items():
+            if other_base != base and _names_similarity(entry['tokens'], other_tokens, entry['truncated']):
+                return None
+    return entry['value'], entry['name'], score
+
+
+def match_hambre(lookup, name, municipality='', book_names=None):
+    """(venta, método, nombre en el archivo). Método: 'exacto', 'similar' o '' si no se encontró."""
+    value, file_name = _lookup_exact(lookup, name, municipality)
+    if not math.isnan(value):
+        return value, 'exacto', file_name
+    similar = _lookup_similar(lookup, name, municipality, book_names)
+    if similar:
+        return similar[0], 'similar', similar[1]
+    return float('nan'), '', ''
+
+
+def lookup_hambre(lookup, name, municipality='', book_names=None):
+    """Venta de HAMBRE de una tienda del Book (NaN si no se encuentra con seguridad)."""
+    return match_hambre(lookup, name, municipality, book_names)[0]
+
+
+def suggest_hambre_names(lookup, name, limit=2):
+    """Nombres del archivo que se parecen a `name`, para revisarlos a mano cuando no se encontró la tienda con seguridad."""
+    entries = getattr(lookup, 'entries', None) or []
+    target = ' '.join(_fuzzy_tokens(split_store_name(name)[0]))
+    scored = {}
+    for entry in entries:
+        ratio = difflib.SequenceMatcher(None, target, ' '.join(entry['tokens'])).ratio()
+        if ratio >= 0.6 and ratio > scored.get(entry['name'], 0):
+            scored[entry['name']] = ratio
+    return [file_name for file_name, _ in sorted(scored.items(), key=lambda item: -item[1])[:limit]]
 
 
 def count_hambre_matches(lookup, book):
-    """(tiendas del Book con dato de Hambre, total de tiendas del Book)."""
+    """(tiendas del Book con dato de Hambre, total de tiendas del Book, de ellas emparejadas por similitud)."""
     if book is None or len(book) == 0 or 'NAME' not in book:
-        return 0, 0
+        return 0, 0, 0
     cities = book['MUNICIPIO'].astype(str) if 'MUNICIPIO' in book else [''] * len(book)
-    matched = sum(1 for name, city in zip(book['NAME'].astype(str), cities) if not math.isnan(lookup_hambre(lookup, name, city)))
-    return matched, len(book)
+    names = book['NAME'].astype(str)
+    prepared = prepare_book_names(names)
+    matched = similar = 0
+    for name, city in zip(names, cities):
+        value, method, _ = match_hambre(lookup, name, city, prepared)
+        if not math.isnan(value):
+            matched += 1
+            similar += method == 'similar'
+    return matched, len(book), similar
 
 
 def render_with_info(fields, sheets, images):
@@ -651,11 +804,15 @@ def render_with_info(fields, sheets, images):
     andatti = fields.get('andatti') or {}
     andatti_active = andatti.get('lookup') is not None
     andatti_period = andatti.get('period_label') or ''
+    book_universe = prepare_book_names(jun['NAME'].astype(str)) if andatti_active and 'NAME' in jun else None
     if andatti_active:
         d = d.copy()
         names = d['NAME'].astype(str) if 'NAME' in d else pd.Series([''] * len(d), index=d.index)
         cities = d['MUNICIPIO'].astype(str) if 'MUNICIPIO' in d else pd.Series([''] * len(d), index=d.index)
-        d['_HAMBRE'] = [lookup_hambre(andatti['lookup'], name, city) for name, city in zip(names, cities)]
+        matches = [match_hambre(andatti['lookup'], name, city, book_universe) for name, city in zip(names, cities)]
+        d['_HAMBRE'] = [m[0] for m in matches]
+        d['_HAMBRE_SRC'] = [m[1] for m in matches]
+        d['_HAMBRE_FILE'] = [m[2] for m in matches]
     sales_col = '_HAMBRE' if andatti_active else 'VENTAS OUM_NUM'
     cols = [c for c in ['NAME', 'SEG26', 'MESOP_NUM', sales_col, 'RENTA UM_NUM', 'COSTO M2_NUM'] if c in d]
     rename = {
@@ -681,6 +838,7 @@ def render_with_info(fields, sheets, images):
     coords_label = ', '.join(format(v, '.6f').rstrip('0').rstrip('.') for v in project_point) if project_point else ''
 
     hambre_missing = []
+    similar_matches = []
     fill_other_upz = bool(fields.get('fill_other_upz'))
     # tiendas de otras UPZ de la misma ciudad: solo se usan si se pide completar las tablas
     pool_source = city_df if not city_df.empty else jun
@@ -688,7 +846,10 @@ def render_with_info(fields, sheets, images):
         pool_source = pool_source.copy()
         pool_names = pool_source['NAME'].astype(str)
         pool_cities = pool_source['MUNICIPIO'].astype(str) if 'MUNICIPIO' in pool_source else pd.Series([''] * len(pool_source), index=pool_source.index)
-        pool_source['_HAMBRE'] = [lookup_hambre(andatti['lookup'], name, city) for name, city in zip(pool_names, pool_cities)]
+        pool_matches = [match_hambre(andatti['lookup'], name, city, book_universe) for name, city in zip(pool_names, pool_cities)]
+        pool_source['_HAMBRE'] = [m[0] for m in pool_matches]
+        pool_source['_HAMBRE_SRC'] = [m[1] for m in pool_matches]
+        pool_source['_HAMBRE_FILE'] = [m[2] for m in pool_matches]
 
     def pool_of(kind):
         if not fill_other_upz or 'TIE27' not in pool_source:
@@ -700,6 +861,10 @@ def render_with_info(fields, sheets, images):
         def view(frame):
             if andatti_active and '_HAMBRE' in frame and 'NAME' in frame:
                 hambre_missing.extend(frame.loc[frame['_HAMBRE'].isna(), 'NAME'].astype(str).tolist())
+            if andatti_active and '_HAMBRE_SRC' in frame and 'NAME' in frame:
+                for book_name, source, file_name in zip(frame['NAME'], frame['_HAMBRE_SRC'], frame['_HAMBRE_FILE']):
+                    if source == 'similar':
+                        similar_matches.append((str(book_name), str(file_name)))
             shown_frame = frame
             if '_FUERA' in frame:  # tienda de otra UPZ: se marca con asterisco
                 shown_frame = frame.copy()
@@ -1268,6 +1433,8 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
     return html_out, {
         'andatti': andatti_active, 'hambre_missing': list(dict.fromkeys(hambre_missing)),
         'requested': nearest_n, 'tmcb_in_upz': len(tmc), 'exp_in_upz': len(exp), 'tmcb_shown': tmc_n, 'exp_shown': exp_n, 'outside_shown': outside_shown,
+        'similar_matches': list(dict.fromkeys(similar_matches)),
+        'hambre_suggestions': {name: suggest_hambre_names(andatti['lookup'], name) for name in dict.fromkeys(hambre_missing)} if andatti_active else {},
     }
 
 
