@@ -494,13 +494,7 @@ with st.expander('General'):
         help='Mínimo 5 y máximo 10. Con más de 5 tiendas, las tablas de la diapositiva General se muestran en modo compacto.',
     )
 
-    f['fill_other_upz'] = st.checkbox(
-        'Si la UPZ tiene menos tiendas, completar con las más cercanas de otras UPZ',
-        value=bool(f.get('fill_other_upz', False)), key='s2_fill_upz',
-        help='Normalmente las tablas solo muestran tiendas de la UPZ del punto. Si la UPZ tiene menos tiendas de las que pides, esta opción agrega '
-             'las más cercanas de otras UPZ de la misma ciudad y las marca con un asterisco (*).',
-    )
-
+    fill_allowed = False
     andatti_active = False
     andatti_payload = None
     andatti_blocker = ''
@@ -509,6 +503,14 @@ with st.expander('General'):
         st.markdown('**Formato Andatti — ventas solo de HAMBRE**')
         andatti_key = st.text_input('Clave del formato Andatti', type='password', key='s2_andatti_key')
         key_status = andatti_key_status(andatti_key)
+        if key_status == 'ok':  # la opción de completar con otras UPZ es solo para quienes tienen el formato Andatti (con su clave)
+            fill_allowed = True
+            f['fill_other_upz'] = st.checkbox(
+                'Si la UPZ tiene menos tiendas, completar con las más cercanas de otras UPZ',
+                value=bool(f.get('fill_other_upz', False)), key='s2_fill_upz',
+                help='Normalmente las tablas solo muestran tiendas de la UPZ del punto. Si la UPZ tiene menos tiendas de las que pides, esta opción agrega '
+                     'las más cercanas de otras UPZ de la misma ciudad y las marca con un asterisco (*).',
+            )
         if key_status == 'not_configured':
             st.info('El formato Andatti todavía no está habilitado: falta configurar la clave «andatti_key» en los Secrets de Streamlit Cloud.')
         elif key_status == 'wrong':
@@ -561,11 +563,12 @@ with st.expander('General'):
                             st.warning('El mes de corte es el mes en curso y está incompleto.')
                     averaged, period = hambre_window_average(hambre_table, cutoff, window=3, default_year=this_year)
                     hambre_lookup = build_hambre_lookup(averaged)
-                    matched, total = count_hambre_matches(hambre_lookup, jun) if jun is not None else (0, 0)
+                    matched, total, similar_count = count_hambre_matches(hambre_lookup, jun) if jun is not None else (0, 0, 0)
+                    similar_note = f' ({similar_count} por similitud de nombre)' if similar_count else ''
                     data_until = f' Datos hasta {month_label(month_options[-1])}.' if month_options else ''
                     st.caption(
                         f"Fuente: {source_label}. Tiendas en «{hambre_info['store_column']}», ventas en «{hambre_info['value_column']}».{data_until} "
-                        f"Periodo: {period}. {matched} de {total} tiendas del Book tienen venta de HAMBRE."
+                        f"Periodo: {period}. {matched} de {total} tiendas del Book tienen venta de HAMBRE{similar_note}."
                     )
                     if jun is not None and matched == 0:
                         andatti_blocker = 'Ninguna tienda del archivo de Power BI coincide con las tiendas del Book. Revisa que sea el reporte correcto.'
@@ -708,19 +711,26 @@ if not coords_ok:
 
 if generate:
     image_bytes = {key: as_bytes(value) for key, value in imgs.items()}
-    render_fields = {**f, 'andatti': andatti_payload} if andatti_active else f
+    render_fields = {**f, 'fill_other_upz': bool(f.get('fill_other_upz')) and fill_allowed}
+    if andatti_active:
+        render_fields['andatti'] = andatti_payload
     html, render_info = render_with_info(render_fields, sheets, image_bytes)
     slide_count = 13 if f.get('microsaturation_enabled') == 'Sí' else 12
     st.success(f'Presentación generada con {slide_count} secciones.')
     missing_hambre = render_info.get('hambre_missing') or []
     if missing_hambre:
-        st.warning('Estas tiendas de las tablas no tienen venta de HAMBRE en el archivo y salen con «—»: ' + ', '.join(missing_hambre) + '.')
+        suggestions = render_info.get('hambre_suggestions') or {}
+        detail = [name + (' (¿será «' + '» o «'.join(suggestions[name]) + '»?)' if suggestions.get(name) else '') for name in missing_hambre]
+        st.warning('Estas tiendas de las tablas no tienen venta de HAMBRE en el archivo y salen con «—»: ' + '; '.join(detail) + '.')
+    similar_found = render_info.get('similar_matches') or []
+    if similar_found:
+        st.info('Emparejadas por similitud de nombre (revísalas): ' + '; '.join(f'{book_name} ↔ {file_name}' for book_name, file_name in similar_found) + '.')
     requested = render_info.get('requested') or 0
     if render_info.get('tmcb_shown', 0) < requested or render_info.get('exp_shown', 0) < requested:
         st.info(
             f"En la UPZ del punto hay {render_info.get('tmcb_in_upz', 0)} tienda(s) TMCB y {render_info.get('exp_in_upz', 0)} EXP en el Book, y pediste {requested} por tabla. "
-            + ('Aun completando con otras UPZ de la ciudad no hay más tiendas.' if f.get('fill_other_upz')
-               else 'Para ver más, marca «Si la UPZ tiene menos tiendas, completar con las más cercanas de otras UPZ».')
+            + ('Aun completando con otras UPZ de la ciudad no hay más tiendas.' if (fill_allowed and f.get('fill_other_upz'))
+               else ('Para ver más, marca «Si la UPZ tiene menos tiendas, completar con las más cercanas de otras UPZ».' if fill_allowed else ''))
         )
     st.download_button(
         'Descargar presentación principal',
