@@ -10,7 +10,7 @@ import difflib
 
 import numpy as np
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 RED = '#B00000'
@@ -46,6 +46,89 @@ def convention_legend(images=None, variant='compact'):
             f'<span>{escape(label)}</span></div>'
         )
     return f'<div class="convention-legend {variant}">' + ''.join(items) + '</div>'
+
+
+# --- Imágenes: se reducen al subirlas, sin que se note ----------------------------------------
+IMAGE_MAX_SIDE = 2400        # lado mayor máximo (px): sobra para una diapositiva, incluso al imprimir
+IMAGE_SKIP_BELOW = 350_000  # las imágenes que ya pesan menos que esto (y no son enormes) se dejan exactamente como están
+_RESAMPLE = getattr(Image, 'Resampling', Image).LANCZOS
+
+
+def _looks_like_photo(image):
+    """True si parece una fotografía: miles de colores distintos en TODAS las zonas revisadas (en píxeles reales, sin reducir).
+    Los mapas, pantallazos y gráficos tienen pocos colores por zona."""
+    width, height = image.size
+    size = 256
+    for fx, fy in ((0.5, 0.5), (0.25, 0.25), (0.75, 0.75)):
+        left = int(min(max(0, width * fx - size / 2), max(0, width - size)))
+        top = int(min(max(0, height * fy - size / 2), max(0, height - size)))
+        crop = image.crop((left, top, left + min(size, width), top + min(size, height))).convert('RGB')
+        if crop.getcolors(maxcolors=4000) is not None:
+            return False
+    return True
+
+
+def _encode_image(image, fmt, quality=92, subsampling=2, icc=None):
+    buffer = BytesIO()
+    extra = {'icc_profile': icc} if icc else {}
+    if fmt == 'JPEG':
+        image.convert('RGB').save(buffer, 'JPEG', quality=quality, subsampling=subsampling, optimize=True, progressive=True, **extra)
+    else:
+        image.save(buffer, 'PNG', optimize=True, **extra)
+    return buffer.getvalue()
+
+
+def optimize_image(raw):
+    """Reduce una imagen SIN que se note: la achica solo si es más grande de lo que necesita una diapositiva y la guarda en el
+    formato más liviano que no daña la calidad (fotos: JPEG de calidad alta; mapas y pantallazos: PNG sin pérdida o JPEG casi
+    sin pérdida; logos con transparencia: PNG). Aplica la rotación que guarda el celular y conserva el perfil de color.
+    Devuelve (bytes, informe). Si no ayuda, o algo falla, devuelve la imagen original sin tocar."""
+    original = bytes(raw) if raw else b''
+    report = {'changed': False, 'before': len(original), 'after': len(original)}
+    if not original:
+        return original, report
+    try:
+        with Image.open(BytesIO(original)) as source:
+            source.load()
+            if getattr(source, 'is_animated', False):
+                return original, report
+            source_format = (source.format or '').upper()
+            icc = source.info.get('icc_profile')
+            width, height = source.size
+            if len(original) <= IMAGE_SKIP_BELOW and max(width, height) <= IMAGE_MAX_SIDE:
+                return original, report
+            image = ImageOps.exif_transpose(source)  # la foto del celular queda derecha sin depender de la etiqueta
+            has_alpha = image.mode in ('RGBA', 'LA') or (image.mode == 'P' and 'transparency' in image.info)
+            if has_alpha and image.convert('RGBA').getchannel('A').getextrema()[0] == 255:
+                has_alpha = False  # tiene canal de transparencia pero todo es opaco (típico de los recortes de pantalla): se trata como imagen normal
+            image = image.convert('RGBA' if has_alpha else 'RGB')
+            looks_photo = False if has_alpha else _looks_like_photo(image)  # se clasifica con los píxeles ORIGINALES: al reducir se mezclan tonos
+            resized = False
+            if max(image.size) > IMAGE_MAX_SIDE:
+                scale = IMAGE_MAX_SIDE / max(image.size)
+                image = image.resize((max(1, round(image.size[0] * scale)), max(1, round(image.size[1] * scale))), _RESAMPLE)
+                resized = True
+            camera_jpeg = source_format in ('JPEG', 'JPG')
+            candidates = []
+            if has_alpha:
+                candidates.append(('PNG', _encode_image(image, 'PNG', icc=icc)))
+            elif looks_photo:
+                if camera_jpeg:  # foto de celular o cámara
+                    candidates.append(('JPEG', _encode_image(image, 'JPEG', quality=92, subsampling=2, icc=icc)))
+                else:  # imagen con mucho color guardada como PNG: calidad máxima y sin desenfocar textos ni líneas de color
+                    candidates.append(('JPEG', _encode_image(image, 'JPEG', quality=95, subsampling=0, icc=icc)))
+            else:  # mapa, pantallazo o gráfico: colores planos y bordes nítidos -> PNG (sin pérdida) siempre que no pese más del doble
+                png = _encode_image(image, 'PNG', icc=icc)
+                jpeg = _encode_image(image, 'JPEG', quality=95, subsampling=0, icc=icc)
+                candidates.append(('PNG', png))
+                if camera_jpeg or len(png) > 2.0 * len(jpeg):  # si ya venía en JPEG (con pérdida), un PNG solo lo engordaría
+                    candidates.append(('JPEG', jpeg))
+            best_format, best = min(candidates, key=lambda item: len(item[1]))
+            if len(best) >= len(original) * 0.92:
+                return original, report  # no vale la pena: se conserva la original
+            return best, {'changed': True, 'before': len(original), 'after': len(best), 'size': image.size, 'format': best_format, 'resized': resized}
+    except Exception:
+        return original, report
 
 
 def image_src(data):
