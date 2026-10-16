@@ -509,13 +509,6 @@ with st.expander('General'):
         else:
             st.caption(f'Cercanía calculada con las columnas «{coord_lat_col}» (latitud) y «{coord_lon_col}» (longitud) del Book.')
 
-    f['nearest_count'] = st.slider(
-        'Tiendas por tabla (TMCB y EXP más cercanas al punto)',
-        min_value=5, max_value=10, step=1, key='s2_nearest_count',
-        value=min(10, max(5, int(f.get('nearest_count') or 5))),
-        help='Mínimo 5 y máximo 10. Con más de 5 tiendas, las tablas de la diapositiva General se muestran en modo compacto.',
-    )
-
     fill_allowed = False
     andatti_active = False
     andatti_payload = None
@@ -525,8 +518,14 @@ with st.expander('General'):
         st.markdown('**Formato Andatti — ventas solo de HAMBRE**')
         andatti_key = st.text_input('Clave del formato Andatti', type='password', key='s2_andatti_key')
         key_status = andatti_key_status(andatti_key)
-        if key_status == 'ok':  # la opción de completar con otras UPZ es solo para quienes tienen el formato Andatti (con su clave)
+        if key_status == 'ok':  # las opciones de MÁS tiendas por tabla son solo para quienes tienen el formato Andatti (con su clave)
             fill_allowed = True
+            f['nearest_count'] = st.slider(
+                'Tiendas por tabla (TMCB y EXP más cercanas al punto)',
+                min_value=5, max_value=10, step=1, key='s2_nearest_count',
+                value=min(10, max(5, int(f.get('nearest_count') or 5))),
+                help='Mínimo 5 y máximo 10. Con más de 5 tiendas, las tablas de la diapositiva General se muestran en modo compacto.',
+            )
             f['fill_other_upz'] = st.checkbox(
                 'Si la UPZ tiene menos tiendas, completar con las más cercanas de otras UPZ',
                 value=bool(f.get('fill_other_upz', False)), key='s2_fill_upz',
@@ -543,25 +542,22 @@ with st.expander('General'):
         elif st.checkbox('Presentación de formato Andatti (ventas solo HAMBRE)', value=True, key='s2_andatti_on'):
             project_file = project_hambre_file()
             hambre_url = hambre_url_from_secrets()
-            andatti_file = st.file_uploader(
-                'Otro Excel de Power BI (opcional: reemplaza al archivo automático)' if (project_file is not None or hambre_url)
-                else 'Excel exportado de Power BI (ventas de HAMBRE por tienda y mes)',
-                type=['xlsx', 'csv'], key='s2_andatti_file',
-            )
             source_name, source_bytes, source_label = None, None, ''
-            if andatti_file is not None:
-                source_name, source_bytes, source_label = andatti_file.name, andatti_file.getvalue(), 'archivo subido'
-            else:
-                if hambre_url:
-                    try:
-                        source_name, source_bytes, source_label = 'Hambre.xlsx', download_hambre(hambre_url), 'enlace de SharePoint'
-                    except ValueError as exc:
-                        st.warning(f'No pude descargar el archivo del enlace de SharePoint. {exc}'
-                                   + (' Uso el archivo del proyecto.' if project_file is not None else ''))
-                if source_bytes is None and project_file is not None:
-                    source_name, source_bytes, source_label = project_file.name, project_file.read_bytes(), f'archivo del proyecto ({project_file.name})'
+            if hambre_url:  # el Excel de Power BI se lee SOLO desde el enlace guardado en los Secrets (ya no se sube a mano)
+                try:
+                    source_name, source_bytes, source_label = 'Hambre.xlsx', download_hambre(hambre_url), 'enlace de SharePoint'
+                except ValueError as exc:
+                    st.warning(f'No pude descargar el archivo del enlace de SharePoint. {exc}'
+                               + (' Uso el archivo del proyecto.' if project_file is not None else ''))
+            if source_bytes is None and project_file is not None:
+                source_name, source_bytes, source_label = project_file.name, project_file.read_bytes(), f'archivo del proyecto ({project_file.name})'
             if source_bytes is None:
-                andatti_blocker = 'Sube el Excel de Power BI con las ventas de HAMBRE, o desactiva el formato Andatti.'
+                if not hambre_url and project_file is None:
+                    andatti_blocker = ('No está configurado el archivo de ventas de HAMBRE (falta «hambre_url» en los Secrets). '
+                                       'Desactiva el formato Andatti o avisa a quien administra la app.')
+                else:
+                    andatti_blocker = ('No se pudo leer el archivo de ventas de HAMBRE (mira el aviso de arriba). '
+                                       'Intenta de nuevo en unos minutos o desactiva el formato Andatti.')
             else:
                 try:
                     hambre_table, hambre_info = parse_hambre_export(read_hambre_file(source_name, source_bytes))
@@ -740,7 +736,8 @@ if not coords_ok:
 
 if generate:
     image_bytes = {key: as_bytes(value) for key, value in imgs.items()}
-    render_fields = {**f, 'fill_other_upz': bool(f.get('fill_other_upz')) and fill_allowed}
+    render_fields = {**f, 'fill_other_upz': bool(f.get('fill_other_upz')) and fill_allowed,
+                     'nearest_count': (f.get('nearest_count') or 5) if fill_allowed else 5}  # los demás especialistas siempre las 5 más cercanas
     if andatti_active:
         render_fields['andatti'] = andatti_payload
     html, render_info = render_with_info(render_fields, sheets, image_bytes)
