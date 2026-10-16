@@ -17,7 +17,7 @@ from data_model import read_book, values, filter_jun, summary_table
 from html_renderer import (
     render_with_info, parse_coordinates, find_coordinate_columns,
     parse_hambre_export, available_months, hambre_window_average, build_hambre_lookup,
-    count_hambre_matches, month_label,
+    count_hambre_matches, month_label, optimize_image,
 )
 
 ROOT = Path(__file__).parent
@@ -296,16 +296,24 @@ def populate_form_widget_state(fields):
 
 
 def image_uploader(label, key, widget_key):
-    """Store uploaded images as bytes so they survive JSON export and reruns."""
+    """Guarda las imágenes subidas como bytes (para que sobrevivan al JSON y a las recargas). Al subirlas se reducen sin que se note."""
     uploaded = st.file_uploader(label, type=['png', 'jpg', 'jpeg', 'webp'], key=widget_key)
     if uploaded is not None:
-        st.session_state.images[key] = uploaded.getvalue()
-        st.session_state.image_names[key] = uploaded.name
+        raw = uploaded.getvalue()
+        signature = (uploaded.name, len(raw), hashlib.sha1(raw).hexdigest())
+        if st.session_state.image_sources.get(key) != signature:  # solo cuando es una imagen nueva, no en cada recarga
+            optimized, report = optimize_image(raw)
+            st.session_state.images[key] = optimized
+            st.session_state.image_names[key] = uploaded.name
+            st.session_state.image_sources[key] = signature
+            st.session_state.image_savings[key] = (report['before'], report['after'])
     elif key not in st.session_state.images:
         st.session_state.images[key] = None
     if st.session_state.images.get(key):
         image_name = st.session_state.image_names.get(key, 'cargada desde JSON')
-        st.caption(f'Imagen registrada: {image_name}')
+        before, after = st.session_state.image_savings.get(key, (0, 0))
+        note = f' ({before / 1e6:.1f} MB → {after / 1e6:.1f} MB)' if before and after and after < before * 0.95 else ''
+        st.caption(f'Imagen registrada: {image_name}{note}')
         st.image(st.session_state.images[key], caption='Vista previa de la imagen recuperada', width='stretch')
 
 
@@ -386,6 +394,10 @@ if 'images' not in st.session_state:
     st.session_state.images = {}
 if 'image_names' not in st.session_state:
     st.session_state.image_names = {}
+if 'image_sources' not in st.session_state:
+    st.session_state.image_sources = {}
+if 'image_savings' not in st.session_state:
+    st.session_state.image_savings = {}
 
 f = st.session_state.fields
 imgs = st.session_state.images
@@ -411,8 +423,16 @@ with st.sidebar:
 
             st.session_state.fields = imported_fields
             restored_images, restored_image_names = restore_images(imported_images)
+            size_before = sum(len(value) for value in restored_images.values())
+            with st.spinner('Optimizando las imágenes del JSON (se reducen sin que se note)…'):
+                restored_images = {image_key: optimize_image(image_bytes)[0] for image_key, image_bytes in restored_images.items()}
+            size_after = sum(len(value) for value in restored_images.values())
             st.session_state.images = restored_images
             st.session_state.image_names = restored_image_names
+            st.session_state.image_sources = {}
+            st.session_state.image_savings = {}
+            st.session_state.json_images_note = (f'Imágenes optimizadas: {size_before / 1e6:.0f} MB → {size_after / 1e6:.0f} MB.'
+                                                 if size_after < size_before * 0.95 else '')
             st.session_state.json_loaded_name = json_upload.name
             st.session_state.json_loaded_signature = hashlib.sha256(json_upload.getvalue()).hexdigest()
             clear_form_widget_state()
@@ -423,6 +443,8 @@ with st.sidebar:
 
     if st.session_state.get('json_loaded_name'):
         st.success(f'Información cargada: {st.session_state.json_loaded_name}')
+        if st.session_state.get('json_images_note'):
+            st.caption(st.session_state.json_images_note)
 
     st.divider()
     st.header('Datos desde Book')
@@ -689,17 +711,24 @@ if jun is not None:
 
 st.divider()
 st.subheader('Acciones')
-json_bytes = build_json_payload(f, imgs, image_names)
+def build_json_now():
+    """El JSON (con todas las imágenes en base64) se arma SOLO al pulsar «Descargar JSON». Antes se armaba en cada recarga
+    de la página (cada foto subida, cada cambio) y, con muchas imágenes, la app se quedaba «cargando»."""
+    return build_json_payload(f, imgs, image_names)
+
+
+total_image_mb = sum(len(as_bytes(value) or b'') for value in imgs.values()) / 1e6
+if total_image_mb > 40:
+    st.warning(f'Las imágenes cargadas pesan {total_image_mb:.0f} MB. Con más de unos 40 MB la app puede ir lenta o reiniciarse: '
+               'usa fotos o pantallazos más livianos.')
 col_json, col_presentation = st.columns([1, 1])
 with col_json:
-    st.download_button(
-        'Descargar JSON de datos',
-        data=json_bytes,
-        file_name=json_filename(f),
-        mime='application/json',
-        width='stretch',
-        help='Guarda campos, selecciones e imágenes para restaurarlos después.',
-    )
+    json_button = dict(file_name=json_filename(f), mime='application/json', width='stretch',
+                       help='Guarda campos, selecciones e imágenes para restaurarlos después.')
+    try:
+        st.download_button('Descargar JSON de datos', data=build_json_now, **json_button)
+    except Exception:  # versiones de Streamlit sin descarga diferida
+        st.download_button('Descargar JSON de datos', data=build_json_now(), **json_button)
 with col_presentation:
     generate = st.button('Generar presentación', type='primary', width='stretch', disabled=(not coords_ok) or bool(andatti_blocker))
 if andatti_blocker:
