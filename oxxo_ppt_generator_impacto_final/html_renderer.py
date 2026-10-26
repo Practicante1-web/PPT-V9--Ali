@@ -159,6 +159,24 @@ def img(data, cls='photo', alt='Imagen de la presentación'):
     return f'<img class="{cls}" src="{src}" alt="{escape(alt, quote=True)}">' if src else ''
 
 
+def image_size(data):
+    """(ancho, alto) en píxeles tal como se VE la imagen (considera la rotación EXIF); None si no se puede leer."""
+    try:
+        with Image.open(BytesIO(data)) as image:
+            width, height = image.size
+            if image.getexif().get(274) in (5, 6, 7, 8):
+                width, height = height, width
+            return width, height
+    except Exception:
+        return None
+
+
+def fit_in_box(width, height, max_width, max_height):
+    """Mayor tamaño que cabe en la caja manteniendo la proporción de la imagen (mismas unidades)."""
+    scale = min(max_width / width, max_height / height)
+    return width * scale, height * scale
+
+
 def media(data, cls, label, alt):
     """Keep the visual frame stable even when the user has not uploaded an image."""
     image = img(data, cls, alt)
@@ -1185,12 +1203,26 @@ def render_with_info(fields, sheets, images):
                 <div class="empty-note">Registra fotos de microsaturación para visualizarlas aquí.</div>
             ''', number=None))
 
-    slides.append(slide('Layout · Capex', f'''
+    capex_image = images.get('layout_image')
+    capex_has_comments = bool(fields.get('capex_comments'))
+    capex_size = image_size(capex_image) if capex_image else None
+    if capex_size:
+        # la imagen ocupa casi toda la diapositiva: se ajusta a su proporción real y la tarjeta queda pegada a ella (sin bordes de sobra)
+        capex_w, capex_h = fit_in_box(capex_size[0], capex_size[1], 12.5 - .1, (5.62 if capex_has_comments else 6.28) - .1)
+        capex_html = f'''
+        <div class="single-asset-layout capex-full">
+            <div class="asset-card capex-full-card" style="width:{capex_w + .1:.3f}in;height:{capex_h + .1:.3f}in">
+                {media(capex_image, 'asset-image', 'Carga la foto de layout / CAPEX', 'Layout y CAPEX')}
+            </div>
+        </div>'''
+    else:
+        capex_html = f'''
         <div class="single-asset-layout">
             <div class="asset-card single-asset-card">
                 {media(images.get('layout_image'), 'asset-image', 'Carga la foto de layout / CAPEX', 'Layout y CAPEX')}
             </div>
-        </div>
+        </div>'''
+    slides.append(slide('Layout · Capex', f'''{capex_html}
         {f'<div class="comment-ribbon"><span>COMENTARIOS</span><p>{text(fields.get("capex_comments", ""), "")}</p></div>' if fields.get('capex_comments') else ''}
     ''', number=6))
 
@@ -1457,6 +1489,9 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
 .asset-label, .store-label { position:absolute; z-index:2; top:.14in; left:.16in; padding:.055in .09in; background:var(--red); color:#fff; font-size:7pt; font-weight:900; letter-spacing:.12em; }
 .capex-card .asset-label { background:var(--blue); }
 .asset-image { display:block; width:100%; height:4.95in; object-fit:contain; object-position:center; background:#fff; border-radius:.07in; }
+.single-asset-layout.capex-full { height:auto; margin-top:-.06in; }
+.capex-full .capex-full-card { padding:.05in; }
+.capex-full-card .asset-image { width:100%; height:100%; object-fit:contain; border-radius:.07in; }
 .comment-ribbon { display:flex; align-items:center; gap:.2in; margin-top:.14in; padding:.09in .14in; background:linear-gradient(90deg,#3E2117,#5A3021); color:#fff; }
 .comment-ribbon span { color:#FFC16D; font-size:7pt; font-weight:900; letter-spacing:.1em; white-space:nowrap; }
 .comment-ribbon p { margin:0; font-size:8.5pt; }
