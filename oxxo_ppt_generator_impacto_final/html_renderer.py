@@ -313,9 +313,9 @@ def expansion_slide_html(fields, images):
     Los estudiantes solo aparecen si se registraron."""
     photo = images.get('general_environment_image') or images.get('expansion_intelligence')
     size = image_size(photo) if photo else None
-    box_h = 3.3
+    box_h = 2.78
     if size:
-        width, height = fit_in_box(size[0], size[1], 12.23 - .24 - 3.4 - .25, box_h)
+        width, height = fit_in_box(size[0], size[1], 12.23 - .24, box_h)
         photo_html = (f'<div class="expansion-photo-box" style="width:{width:.3f}in;height:{height:.3f}in">'
                       f'{media(photo, "expansion-main-image", "Carga la foto de isócrona", "Foto de isócrona")}</div>')
     else:
@@ -344,7 +344,7 @@ def expansion_slide_html(fields, images):
     return f'''
         <div class="expansion-main-layout">
             <div class="visual-card expansion-main-photo">{photo_html}
-                <div class="expansion-legend"><div class="panel-kicker">CONVENCIONES DE TIENDA</div>{convention_legend(images, 'list')}</div>
+                <div class="expansion-legend"><div class="panel-kicker">CONVENCIONES DE TIENDA</div>{convention_legend(images, 'strip')}</div>
             </div>
             <div class="expansion-main-panel">
                 <div class="traffic-strip"><span>TRÁFICO / 15 MIN</span><b>Peatonal {text(fields.get('pedestrian_15', '—'))}</b><b>Vehicular {text(fields.get('vehicle_15', '—'))}</b><b>Motos {text(fields.get('motorcycle_15', '—'))}</b></div>
@@ -1676,11 +1676,15 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
 .commercial p { font-size:9pt; line-height:1.35; }
 /* --- Expansión: foto de isócrona con su leyenda al lado --- */
 .expansion-main-layout { height:6.2in; }
-.expansion-main-photo { height:3.5in; max-height:none; justify-content:flex-start; gap:.25in; padding:.1in .12in; }
+.expansion-main-photo { height:3.5in; max-height:none; flex-direction:column; align-items:center; justify-content:flex-start; gap:.07in; padding:.08in .12in .07in; }
 .expansion-photo-box { flex:none; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:.07in; }
 .expansion-photo-box .expansion-main-image { display:block; width:100%; height:100%; max-height:none; object-fit:contain; }
-.expansion-legend { flex:1; min-width:0; }
-.expansion-legend .panel-kicker { margin:0 0 .09in; }
+.expansion-legend { flex:none; width:100%; min-width:0; }
+.expansion-legend .panel-kicker { margin:0 0 .035in .02in; }
+.expansion-legend .convention-legend.strip { gap:.05in; }
+.expansion-legend .convention-legend.strip .convention-item { grid-template-rows:.17in auto; padding:.016in .03in .022in; }
+.expansion-legend .convention-legend.strip .convention-swatch { height:.12in; }
+.expansion-legend .convention-legend.strip .convention-item span:last-child { font-size:5.6pt; }
 .convention-legend.list { grid-template-columns:repeat(2,minmax(0,1fr)); gap:.08in .14in; }
 .convention-legend.list .convention-item { grid-template-columns:.55in 1fr; grid-template-rows:auto; gap:.1in; padding:.045in .07in; }
 .convention-legend.list .convention-swatch { height:.2in; }
