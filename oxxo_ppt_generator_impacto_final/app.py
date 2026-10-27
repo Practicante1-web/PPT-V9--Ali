@@ -17,7 +17,7 @@ from data_model import read_book, values, filter_jun, summary_table
 from html_renderer import (
     render_with_info, parse_coordinates, find_coordinate_columns,
     parse_hambre_export, available_months, hambre_window_average, build_hambre_lookup,
-    count_hambre_matches, month_label, optimize_image,
+    count_hambre_matches, month_label, optimize_image, SLIDE_ORDER,
 )
 
 ROOT = Path(__file__).parent
@@ -31,10 +31,12 @@ IMAGE_KEYS = {
     'generator_image_1', 'generator_image_2', 'generator_image_3', 'generator_image_4',
     'generator_housing_image_1', 'generator_housing_image_2', 'generator_housing_image_3', 'generator_housing_image_4',
     'generator_employment_image_1', 'generator_employment_image_2', 'generator_employment_image_3', 'generator_employment_image_4',
+    'generator_students_image_1', 'generator_students_image_2', 'generator_students_image_3', 'generator_students_image_4',
+    'extra_image_1', 'extra_image_2', 'extra_image_3', 'extra_image_4', 'extra_image_5',
 }
 FORM_WIDGET_PREFIXES = (
     'book_', 's1_', 's2_', 's3_', 's4_', 's5_', 's6_', 's7_', 's8_', 's9_',
-    's10_', 's11_', 's12_', 'pilot_',
+    's10_', 's11_', 's12_', 's13_', 'pilot_',
 )
 
 st.set_page_config(page_title='OXXO | Generar presentación', layout='wide')
@@ -173,6 +175,7 @@ SPECIALISTS = [
 ]
 # Especialistas del formato Andatti (ventas solo de HAMBRE): ven el bloque «Formato Andatti» y necesitan la clave.
 ANDATTI_SPECIALISTS = ('LAURA SOFÍA VECINO MARRUGO', 'DEERLY CALDERON')
+TEXT_POSITIONS = ['Debajo de la imagen', 'A la derecha de la imagen']
 GENERATOR_TYPES = ['Administrativo', 'Residencial', 'Comercial', 'Industrial', 'Educativo', 'Salud', 'Transporte masivo']
 YES_NO = ['SI', 'NO']
 IPC_OPTIONS = ['PLANO', '+1', '+2', '+3']
@@ -232,6 +235,8 @@ NUMERIC_WIDGET_DEFAULTS = {
     's5_housing_300': 'housing_300',
     's5_jobs_100': 'jobs_100',
     's5_jobs_300': 'jobs_300',
+    's5_students_100': 'students_100',
+    's5_students_300': 'students_300',
     's10_project_rent': 'project_rent',
     's10_project_area': 'project_area',
 }
@@ -272,7 +277,7 @@ def populate_form_widget_state(fields):
         st.session_state[widget_key] = _nonnegative_float(fields.get(field_key, 0.0))
 
     legacy_cards = fields.get('generator_cards', []) if isinstance(fields.get('generator_cards', []), list) else []
-    groups = [('housing', fields.get('generator_housing_cards', [])), ('employment', fields.get('generator_employment_cards', []))]
+    groups = [('housing', fields.get('generator_housing_cards', [])), ('employment', fields.get('generator_employment_cards', [])), ('students', fields.get('generator_students_cards', []))]
     for group, source_cards in groups:
         source_cards = source_cards if isinstance(source_cards, list) else []
         if not source_cards and group == 'housing':
@@ -280,7 +285,7 @@ def populate_form_widget_state(fields):
         for index in range(1, 5):
             card = source_cards[index - 1] if index - 1 < len(source_cards) and isinstance(source_cards[index - 1], dict) else {}
             st.session_state[f's5_{group}_name{index}'] = '' if card.get('name') is None else str(card.get('name', ''))
-            st.session_state[f's5_{group}_type{index}'] = card.get('type', 'Residencial')
+            st.session_state[f's5_{group}_type{index}'] = card.get('type', 'Educativo' if group == 'students' else 'Residencial')
             st.session_state[f's5_{group}_val{index}'] = _nonnegative_float(card.get('value', 0.0))
             if group == 'housing':
                 st.session_state[f's5_name{index}'] = st.session_state[f's5_{group}_name{index}']
@@ -593,7 +598,7 @@ with st.expander('General'):
                     else:
                         andatti_payload = {'lookup': hambre_lookup, 'period_label': period}
                         andatti_active = True
-    image_uploader('Foto de entorno general', 'general_environment_image', 's2_img')
+    image_uploader('FOTO DE ISOCRONA', 'general_environment_image', 's2_img')
     if city == 'Ciudad nueva':
         f['new_city'] = st.text_input('Ciudad nueva / municipio', f.get('new_city', ''), key='s2_new_city')
     else:
@@ -613,10 +618,11 @@ with st.expander('Solución de imagen'):
     f['traffic_video_link'] = st.text_input('Video tráfico — link', f.get('traffic_video_link', ''), key='s4_video')
     f['streetview_link'] = st.text_input('Street View — link', f.get('streetview_link', ''), key='s4_street')
 
-for group, title in [('housing', 'Entorno | Generadores Vivienda'), ('employment', 'Entorno | Generadores Empleo')]:
+for group, title in [('housing', 'Entorno | Generadores Vivienda'), ('employment', 'Entorno | Generadores Empleo'), ('students', 'Entorno | Generadores Estudiantes')]:
     with st.expander(title):
         cards = []
-        st.caption('Carga cuatro fotos, indica el tipo de generador y el número aproximado de viviendas o empleos asociados.')
+        st.caption('Carga cuatro fotos, indica el tipo de generador y el número aproximado de estudiantes asociados. Si no cargas nada, esta diapositiva NO aparece en la presentación.' if group == 'students'
+                   else 'Carga cuatro fotos, indica el tipo de generador y el número aproximado de viviendas o empleos asociados.')
         for i in range(1, 5):
             st.markdown(f'**Generador {i}**')
             a, b, c, d = st.columns([2, 2, 2, 2])
@@ -627,16 +633,15 @@ for group, title in [('housing', 'Entorno | Generadores Vivienda'), ('employment
             with b:
                 name = st.text_input('Nombre del generador', old_card.get('name', ''), key=f's5_{group}_name{i}')
             with c:
-                typ = st.selectbox('Tipo de generador', GENERATOR_TYPES, index=GENERATOR_TYPES.index(old_card.get('type')) if old_card.get('type') in GENERATOR_TYPES else 0, key=f's5_{group}_type{i}')
+                typ = st.selectbox('Tipo de generador', GENERATOR_TYPES, index=GENERATOR_TYPES.index(old_card.get('type')) if old_card.get('type') in GENERATOR_TYPES else (GENERATOR_TYPES.index('Educativo') if group == 'students' else 0), key=f's5_{group}_type{i}')
             with d:
                 val = st.number_input('Número aprox.', min_value=0.0, value=float(old_card.get('value', 0) or 0), key=f's5_{group}_val{i}')
             cards.append({'name': name, 'type': typ, 'value': val})
         f[f'generator_{group}_cards'] = cards
 with st.expander('Expansión | Mercado y Tráfico'):
-    image_uploader('Imagen de inteligencia de expansión', 'expansion_intelligence', 's5_intel')
-    st.caption('Esta imagen aparecerá únicamente en la sección integrada de Expansión | Mercado y Tráfico.')
+    st.caption('La foto de isócrona se toma de la sección General: no hay que subirla otra vez. Los estudiantes solo aparecen en la diapositiva si registras un número.')
     st.markdown('**Mercado y vivienda/empleo**')
-    for key, label in [('housing_100', 'Viviendas a 100 m'), ('housing_300', 'Viviendas a 300 m'), ('jobs_100', 'Empleos a 100 m'), ('jobs_300', 'Empleos a 300 m')]:
+    for key, label in [('housing_100', 'Viviendas a 100 m'), ('housing_300', 'Viviendas a 300 m'), ('jobs_100', 'Empleos a 100 m'), ('jobs_300', 'Empleos a 300 m'), ('students_100', 'Estudiantes a 100 m'), ('students_300', 'Estudiantes a 300 m')]:
         f[key] = st.number_input(label, min_value=0.0, value=float(f.get(key, 0) or 0), key=f's5_{key}')
     principal_default = f.get('generator_type', GENERATOR_TYPES[0])
     f['generator_type'] = st.selectbox('Tipo de generador principal', GENERATOR_TYPES, index=GENERATOR_TYPES.index(principal_default) if principal_default in GENERATOR_TYPES else 0, key='s5_generator')
@@ -700,6 +705,32 @@ with st.expander('Condiciones comerciales'):
 
 with st.expander('Viabilidad financiera'):
     image_uploader('Foto de viabilidad financiera — se presentará dentro de la slide', 'financial_viability_image', 's11_image')
+
+with st.expander('Diapositivas adicionales (opcional)'):
+    st.caption('Solo si necesitas agregar información extra: una diapositiva con el mismo diseño, con título, imagen y texto. '
+               'Puedes ubicarla en cualquier parte de la presentación. Si no la necesitas, déjala en 0.')
+    extra_count = int(st.number_input('¿Cuántas diapositivas adicionales quieres agregar?', min_value=0, max_value=5, step=1,
+                                      value=min(5, max(0, int(f.get('extra_count', 0) or 0))), key='s13_extra_count'))
+    f['extra_count'] = extra_count
+    old_extras = f.get('extra_slides', []) if isinstance(f.get('extra_slides', []), list) else []
+    extras = []
+    for i in range(1, 6):
+        if i > extra_count:
+            imgs[f'extra_image_{i}'] = None  # las que se quitan no pesan en el JSON
+            continue
+        old = old_extras[i - 1] if i - 1 < len(old_extras) and isinstance(old_extras[i - 1], dict) else {}
+        st.markdown(f'**Diapositiva adicional {i}**')
+        title = st.text_input('Título', old.get('title', ''), key=f's13_extra{i}_title')
+        image_uploader('Imagen', f'extra_image_{i}', f's13_extra{i}_img')
+        body = st.text_area('Texto (opcional, máximo 2.500 caracteres)', old.get('text', ''), max_chars=2500, key=f's13_extra{i}_text')
+        col_after, col_position = st.columns(2)
+        with col_after:
+            after = st.selectbox('Ubicar después de', SLIDE_ORDER, index=SLIDE_ORDER.index(old['after']) if old.get('after') in SLIDE_ORDER else len(SLIDE_ORDER) - 1, key=f's13_extra{i}_after')
+        with col_position:
+            position = st.radio('Texto', TEXT_POSITIONS, index=TEXT_POSITIONS.index(old['text_position']) if old.get('text_position') in TEXT_POSITIONS else 0, key=f's13_extra{i}_position')
+        extras.append({'title': title, 'text': body, 'after': after, 'text_position': position})
+    f['extra_slides'] = extras
+
 
 if jun is not None:
     st.subheader('Vista previa de Book')
