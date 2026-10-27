@@ -7,6 +7,7 @@ import re
 import unicodedata
 import datetime as _dt
 import difflib
+import html as _html
 
 import numpy as np
 import pandas as pd
@@ -185,6 +186,177 @@ def media(data, cls, label, alt):
     return f'<div class="{cls} image-placeholder"><span>{escape(label)}</span></div>'
 
 
+# --- Diapositivas que aprovechan todo el espacio -----------------------------------------------
+def _aspect(data, default=1.5):
+    size = image_size(data) if data else None
+    return size[0] / size[1] if size else default
+
+
+def full_image_layout(data, label, alt, max_h=6.28, max_w=12.5):
+    """Una sola imagen: la tarjeta se ajusta a la proporción real de la imagen y ocupa casi toda la diapositiva."""
+    size = image_size(data) if data else None
+    if size:
+        width, height = fit_in_box(size[0], size[1], max_w - .1, max_h - .1)
+        return (f'<div class="single-asset-layout capex-full"><div class="asset-card capex-full-card" '
+                f'style="width:{width + .1:.3f}in;height:{height + .1:.3f}in">{media(data, "asset-image", label, alt)}</div></div>')
+    return f'<div class="single-asset-layout"><div class="asset-card single-asset-card">{media(data, "asset-image", label, alt)}</div></div>'
+
+
+def gallery_html(items, max_w=12.4, max_h=6.2, gap=.12, alt='Foto'):
+    """Varias imágenes en filas, SIN recortarlas ni dejar bandas: de todos los repartos posibles elige el que las deja más grandes."""
+    count = len(items)
+    aspects = [_aspect(data) for data in items]
+    best = None
+    for mask in range(1 << max(count - 1, 0)):
+        rows, current = [], [0]
+        for index in range(1, count):
+            if mask >> (index - 1) & 1:
+                rows.append(current)
+                current = [index]
+            else:
+                current.append(index)
+        rows.append(current)
+        heights = [(max_w - gap * (len(row) - 1)) / sum(aspects[i] for i in row) for row in rows]
+        scale = min(1.0, (max_h - gap * (len(rows) - 1)) / sum(heights))
+        area = sum(math.log(aspects[i] * (height * scale) ** 2) for row, height in zip(rows, heights) for i in row)  # equilibrado: ninguna foto queda minúscula
+        if best is None or area > best[0] + 1e-9:
+            best = (area, rows, [height * scale for height in heights])
+    _, rows, heights = best
+    out = []
+    for row, height in zip(rows, heights):
+        tiles = ''.join(
+            f'<div class="gallery-tile" style="width:{aspects[i] * height:.3f}in;height:{height:.3f}in">'
+            f'<img src="{image_src(items[i])}" alt="{escape(alt, quote=True)}"></div>' for i in row)
+        out.append(f'<div class="gallery-row">{tiles}</div>')
+    return '<div class="gallery">' + ''.join(out) + '</div>'
+
+
+def sister_photo_html(data):
+    """Foto principal de la tienda hermana ajustada a su proporción real (sin bandas dentro de la tarjeta)."""
+    size = image_size(data) if data else None
+    if not size:
+        return f'<div class="store-card sister-photo">{media(data, "store-image", "Carga la foto de la tienda espejo", "Tienda espejo")}</div>'
+    width, height = fit_in_box(size[0], size[1], 6.6, 5.9)
+    return (f'<div class="sister-photo-col"><div class="sister-photo-fit" style="width:{width + .1:.3f}in;height:{height + .1:.3f}in">'
+            f'{media(data, "store-image", "Carga la foto de la tienda espejo", "Tienda espejo")}</div></div>')
+
+
+def text_html(value):
+    """Texto libre con saltos de línea."""
+    return escape(str(value or '').strip()).replace('\n', '<br>')
+
+
+def _pick(length, tiers):
+    """Primer nivel (límite, valor...) cuyo límite cubre el largo del texto; si es más largo, el último."""
+    for tier in tiers:
+        if length <= tier[0]:
+            return tier[1:]
+    return tiers[-1][1:]
+
+
+def custom_slide_html(extra, image):
+    """Cuerpo de una diapositiva adicional: título (lo pone slide()), imagen grande y texto, solo con lo que se haya llenado.
+    La letra se ajusta al largo del texto para que nunca se salga de la diapositiva."""
+    body = str(extra.get('text') or '').strip()
+    if not image and not body:
+        return '<div class="empty-note">Agrega una imagen o un texto para esta diapositiva.</div>'
+    if not body:
+        return full_image_layout(image, '', 'Imagen')
+    length = len(body)
+    if not image:
+        (pt,) = _pick(length, [(700, 15), (1400, 13), (2200, 11.5), (10 ** 9, 10)])
+        return f'<div class="custom-text-only" style="font-size:{pt}pt">{text_html(body)}</div>'
+    if extra.get('text_position') == 'A la derecha de la imagen':
+        panel, pt = _pick(length, [(350, 3.4, 13), (800, 4.2, 11.5), (1400, 5.0, 10), (2000, 5.6, 9.5), (10 ** 9, 6.0, 9)])
+        size = image_size(image)
+        width, height = fit_in_box(size[0], size[1], 12.4 - panel - .25 - .1, 6.18) if size else (6.0, 5.0)
+        return (f'<div class="custom-side"><div class="asset-card capex-full-card" style="width:{width + .1:.3f}in;height:{height + .1:.3f}in">'
+                f'{media(image, "asset-image", "", "Imagen")}</div>'
+                f'<div class="custom-text" style="flex:0 0 {panel:.2f}in;font-size:{pt}pt">{text_html(body)}</div></div>')
+    (pt,) = _pick(length, [(500, 11), (900, 10), (10 ** 9, 9)])
+    chars_per_line = 12.0 / (pt * .5 / 72)
+    lines = sum(max(1, -(-len(part) // int(chars_per_line))) for part in body.split('\n'))
+    ribbon_height = lines * (pt * 1.4 / 72) + .3
+    return (full_image_layout(image, '', 'Imagen', max_h=max(1.8, 6.28 - ribbon_height - .14))
+            + f'<div class="custom-ribbon" style="font-size:{pt}pt">{text_html(body)}</div>')
+
+
+def insert_extra_slides(slides, fields, images, order):
+    """Inserta las diapositivas adicionales (opcionales) justo después de la diapositiva que cada una indique."""
+    extras = fields.get('extra_slides')
+    if not isinstance(extras, list) or not extras:
+        return slides
+    titles = ['Portada'] + [
+        (_html.unescape(found.group(1)) if (found := re.search(r'<h1>(.*?)</h1>', page)) else '') for page in slides[1:]
+    ]
+    result, names = list(slides), list(titles)
+    for position, extra in enumerate(extras, start=1):
+        if not isinstance(extra, dict):
+            continue
+        image = images.get(f'extra_image_{position}')
+        if not (str(extra.get('title') or '').strip() or str(extra.get('text') or '').strip() or image):
+            continue  # sin título, texto ni imagen no sale nada
+        anchor = extra.get('after') or order[-1]
+        candidates = [anchor] + (list(reversed(order[:order.index(anchor)])) if anchor in order else [])
+        found_index = next((max(i for i, name in enumerate(names) if name == candidate) for candidate in candidates if candidate in names), None)
+        slot = (len(result) if found_index is None else found_index + 1)
+        while found_index is not None and slot < len(result) and names[slot] is None:
+            slot += 1  # varias adicionales con la misma ubicación: respetan el orden en que se crearon
+        page = slide(str(extra.get('title') or '').strip(), custom_slide_html(extra, image), number=None)
+        result.insert(slot, page)
+        names.insert(slot, None)
+    return result
+
+
+def expansion_slide_html(fields, images):
+    """Expansión | Mercado y Tráfico: foto de isócrona (la misma del General) con su leyenda, tráfico y mercado.
+    Los estudiantes solo aparecen si se registraron."""
+    photo = images.get('general_environment_image') or images.get('expansion_intelligence')
+    size = image_size(photo) if photo else None
+    box_h = 3.3
+    if size:
+        width, height = fit_in_box(size[0], size[1], 12.23 - .24 - 3.4 - .25, box_h)
+        photo_html = (f'<div class="expansion-photo-box" style="width:{width:.3f}in;height:{height:.3f}in">'
+                      f'{media(photo, "expansion-main-image", "Carga la foto de isócrona", "Foto de isócrona")}</div>')
+    else:
+        photo_html = (f'<div class="expansion-photo-box" style="width:6in;height:{box_h}in">'
+                      f'{media(None, "expansion-main-image", "Carga la foto de isócrona", "Foto de isócrona")}</div>')
+
+    def column(radius, divided):
+        housing = fields.get(f'housing_{radius}', 0) or 0
+        jobs = fields.get(f'jobs_{radius}', 0) or 0
+        students = fields.get(f'students_{radius}', 0) or 0
+        total = housing + jobs + students
+        extra = ' has-students' if students else ''
+        kpis = (f'<div><span>Viviendas {radius} m</span><strong>{number(housing)}</strong></div>'
+                f'<div><span>Empleos {radius} m</span><strong>{number(jobs)}</strong></div>')
+        shares = (f'<div><span>Viviendas / mercado total</span><strong>{percentage(housing, total)}</strong></div>'
+                  f'<div><span>Empleos / mercado total</span><strong>{percentage(jobs, total)}</strong></div>')
+        if students:
+            kpis += f'<div><span>Estudiantes {radius} m</span><strong>{number(students)}</strong></div>'
+            shares += f'<div><span>Estudiantes / mercado total</span><strong>{percentage(students, total)}</strong></div>'
+        kpis += (f'<div class="accent-kpi"><span>Mercado total</span><strong>{number(total)}</strong>'
+                 f'<small>{"Viviendas + empleos + estudiantes" if students else "Viviendas + empleos"}</small></div>')
+        return (f'<div class="expansion-column{" expansion-column-divided" if divided else ""}">'
+                f'<div class="expansion-column-title">RADIO {radius} M</div>'
+                f'<div class="kpi-grid{extra}">{kpis}</div><div class="market-share{extra}">{shares}</div></div>')
+
+    return f'''
+        <div class="expansion-main-layout">
+            <div class="visual-card expansion-main-photo">{photo_html}
+                <div class="expansion-legend"><div class="panel-kicker">CONVENCIONES DE TIENDA</div>{convention_legend(images, 'list')}</div>
+            </div>
+            <div class="expansion-main-panel">
+                <div class="traffic-strip"><span>TRÁFICO / 15 MIN</span><b>Peatonal {text(fields.get('pedestrian_15', '—'))}</b><b>Vehicular {text(fields.get('vehicle_15', '—'))}</b><b>Motos {text(fields.get('motorcycle_15', '—'))}</b></div>
+                <div class="expansion-columns">{column(300, False)}{column(100, True)}</div>
+            </div>
+        </div>
+    '''
+
+
+SLIDE_ORDER = ['Portada', 'General', 'Solución de imagen', 'Entorno | Generadores Vivienda', 'Entorno | Generadores Empleo', 'Entorno | Generadores Estudiantes', 'Expansión | Mercado y Tráfico', 'Microsaturación adicional', 'Layout · Capex', 'Tienda Hermana', 'Networks', 'Condiciones comerciales', 'Viabilidad financiera']
+
+
 def money(value):
     try:
         number = float(value)
@@ -263,6 +435,17 @@ def slide(title, body, number=None, cover=False):
 
 def financial_slide(data):
     """Financial slide with the regular presentation frame and an optional image."""
+    size = image_size(data) if data else None
+    if size:  # la imagen se ajusta a su proporción real y ocupa casi toda la diapositiva
+        width, height = fit_in_box(size[0], size[1], 12.4 - .28, 6.25 - .28 - .42)
+        return slide('Viabilidad financiera', f'''
+        <div class="financial-layout fit">
+            <div class="financial-photo-card fit" style="width:{width + .28:.3f}in">
+                <div class="panel-kicker">SOPORTE DE VIABILIDAD</div>
+                <img class="financial-image fit" style="width:{width:.3f}in;height:{height:.3f}in" src="{image_src(data)}" alt="Viabilidad financiera">
+            </div>
+        </div>
+    ''', number=11)
     return slide('Viabilidad financiera', f'''
         <div class="financial-layout">
             <div class="financial-photo-card">
@@ -1060,11 +1243,11 @@ def render_with_info(fields, sheets, images):
         ['Apertura', fields.get('opening_date', '')],
     ], columns=['Hito', 'Fecha'])
 
-    def build_generator_cards(group, fallback_images=False):
+    def build_generator_cards(group, fallback_images=False, legacy=True):
         source = fields.get(f'generator_{group}_cards', [])
         if not isinstance(source, list):
             source = []
-        if not source:
+        if not source and legacy:
             source = fields.get('generator_cards', []) if isinstance(fields.get('generator_cards', []), list) else []
         cards_out = []
         for index, card in enumerate(source[:4], start=1):
@@ -1088,6 +1271,7 @@ def render_with_info(fields, sheets, images):
 
     housing_cards, housing_count = build_generator_cards('housing', fallback_images=False)
     employment_cards, employment_count = build_generator_cards('employment')
+    students_cards, students_count = build_generator_cards('students', fallback_images=False, legacy=False)
     links = ' <span class="link-separator">|</span> '.join(filter(None, [
         link('Ubicación', fields.get('location_link') or fields.get('maps_link')),
         link('Video tráfico', fields.get('traffic_video_link')),
@@ -1127,7 +1311,7 @@ def render_with_info(fields, sheets, images):
         </div>
         <div class="general-layout{dense_class}">
             <div class="visual-card environment-visual">
-                {media(images.get('general_environment_image'), 'environment-photo', 'Carga una foto de entorno', 'Entorno general')}
+                {media(images.get('general_environment_image'), 'environment-photo', 'Carga la foto de isócrona', 'Entorno general')}
                 <div class="visual-caption"><b>Lectura del entorno</b><span>Imagen principal del área de influencia</span></div>
             </div>
             <div class="general-right">
@@ -1140,7 +1324,7 @@ def render_with_info(fields, sheets, images):
     ''', number=2))
 
     slides.append(slide('Solución de imagen', f'''
-        <div class="solution-photos two-photos">
+        <div class="solution-photos two-photos{' has-links' if links else ''}">
             <div>{media(images.get('solution_image_1'), 'photo-large', 'Carga la foto inicial del local', 'Foto inicial local')}</div>
             <div>{media(images.get('solution_image_2'), 'photo-large', 'Carga la foto solución de imagen', 'Foto solución de imagen')}</div>
         </div>
@@ -1151,53 +1335,23 @@ def render_with_info(fields, sheets, images):
         {f'<div class="links">{links}</div>' if links else ''}
     ''', number=3))
 
-    for title, cards, count in [('Entorno | Generadores Vivienda', housing_cards, housing_count), ('Entorno | Generadores Empleo', employment_cards, employment_count)]:
+    generator_pages = [('Entorno | Generadores Vivienda', housing_cards, housing_count), ('Entorno | Generadores Empleo', employment_cards, employment_count)]
+    if students_count:  # sin generadores de estudiantes no sale la diapositiva
+        generator_pages.append(('Entorno | Generadores Estudiantes', students_cards, students_count))
+    for title, cards, count in generator_pages:
         slides.append(slide(title, f'''
             <div class="generator-only-layout">
                 <div class="generator-grid generator-grid-large count-{min(count, 4) or 4}">{cards}</div>
             </div>
         ''', number=None))
 
-    slides.append(slide('Expansión | Mercado y Tráfico', f'''
-        <div class="expansion-main-layout">
-            <div class="visual-card expansion-main-photo">{media(images.get('expansion_intelligence'), 'expansion-main-image', 'Carga la foto de expansión', 'Foto de expansión')}</div>
-            <div class="expansion-main-panel">
-                <div class="traffic-strip"><span>TRÁFICO / 15 MIN</span><b>Peatonal {text(fields.get('pedestrian_15', '—'))}</b><b>Vehicular {text(fields.get('vehicle_15', '—'))}</b><b>Motos {text(fields.get('motorcycle_15', '—'))}</b></div>
-                <div class="expansion-columns">
-                    <div class="expansion-column">
-                        <div class="expansion-column-title">RADIO 300 M</div>
-                        <div class="kpi-grid">
-                            <div><span>Viviendas 300 m</span><strong>{number(fields.get('housing_300', 0))}</strong></div>
-                            <div><span>Empleos 300 m</span><strong>{number(fields.get('jobs_300', 0))}</strong></div>
-                            <div class="accent-kpi"><span>Mercado total</span><strong>{number(total_market)}</strong><small>Viviendas + empleos</small></div>
-                        </div>
-                        <div class="market-share"><div><span>Viviendas / mercado total</span><strong>{percentage(fields.get('housing_300', 0), total_market)}</strong></div><div><span>Empleos / mercado total</span><strong>{percentage(fields.get('jobs_300', 0), total_market)}</strong></div></div>
-                    </div>
-                    <div class="expansion-column expansion-column-divided">
-                        <div class="expansion-column-title">RADIO 100 M</div>
-                        <div class="kpi-grid">
-                            <div><span>Viviendas 100 m</span><strong>{number(fields.get('housing_100', 0))}</strong></div>
-                            <div><span>Empleos 100 m</span><strong>{number(fields.get('jobs_100', 0))}</strong></div>
-                            <div class="accent-kpi"><span>Mercado total</span><strong>{number(total_market_100)}</strong><small>Viviendas + empleos</small></div>
-                        </div>
-                        <div class="market-share"><div><span>Viviendas / mercado total</span><strong>{percentage(fields.get('housing_100', 0), total_market_100)}</strong></div><div><span>Empleos / mercado total</span><strong>{percentage(fields.get('jobs_100', 0), total_market_100)}</strong></div></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    ''', number=None))
+    slides.append(slide('Expansión | Mercado y Tráfico', expansion_slide_html(fields, images), number=None))
 
     if fields.get('microsaturation_enabled') == 'Sí':
         micro_present = [images.get(f'microsaturation_image_{i}') for i in range(1, 6) if images.get(f'microsaturation_image_{i}')]
         if micro_present:
             for micro_image in micro_present:
-                slides.append(slide('Microsaturación adicional', f'''
-                    <div class="single-asset-layout">
-                        <div class="asset-card single-asset-card">
-                            <img class="asset-image" src="{image_src(micro_image)}" alt="Foto de microsaturación">
-                        </div>
-                    </div>
-                ''', number=None))
+                slides.append(slide('Microsaturación adicional', full_image_layout(micro_image, '', 'Foto de microsaturación'), number=None))
         else:
             slides.append(slide('Microsaturación adicional', '''
                 <div class="empty-note">Registra fotos de microsaturación para visualizarlas aquí.</div>
@@ -1228,7 +1382,7 @@ def render_with_info(fields, sheets, images):
 
     slides.append(slide('Tienda Hermana', f'''
         <div class="sister-layout">
-            <div class="store-card sister-photo">{media(images.get('similar_image'), 'store-image', 'Carga la foto de la tienda espejo', 'Tienda espejo')}</div>
+            {sister_photo_html(images.get('similar_image'))}
             <div class="sister-right">
                 <div class="sister-name-card compact"><span>TIENDA HERMANA SELECCIONADA</span><strong>{text(fields.get('book_store', 'Pendiente'))}</strong><p>{text(fields.get('similar_comments', ''), 'Sin comentarios adicionales')}</p>{f'<div class="links">{link("Link Tienda Hermana", fields.get("similar_store_link"))}</div>' if fields.get('similar_store_link') else ''}</div>
                 <div class="sister-secondary-photo">{media(images.get('similar_image_2'), 'sister-secondary-image', 'Carga una foto adicional', 'Foto adicional tienda hermana')}</div>
@@ -1237,18 +1391,17 @@ def render_with_info(fields, sheets, images):
     ''', number=8))
 
     slides.append(slide('Networks', f'''
-        <div class="single-asset-layout">
-            <div class="asset-card single-asset-card">
-                {media(images.get('success_criteria_image'), 'asset-image', 'Carga la foto de Networks', 'Networks')}
-            </div>
-        </div>
+        {full_image_layout(images.get('success_criteria_image'), 'Carga la foto de Networks', 'Networks')}
     ''', number=9))
 
+    commercial_extra_lines = sum(max(1, -(-len(str(value or '')) // 34)) - 1 for value in commercial['Nombre del proyecto'])
+    commercial_size = '' if commercial_extra_lines <= 2 else (' compact' if commercial_extra_lines <= 9 else ' tight')  # textos largos: tabla más compacta
     slides.append(slide('Condiciones comerciales', f'''
-        <div class="commercial"><div>{table_html(commercial)}</div><div><h3>Hitos del proyecto</h3>{table_html(dates)}<p>{text(fields.get('commercial_comments', ''), '')}</p></div></div>
+        <div class="commercial{commercial_size}"><div>{table_html(commercial)}</div><div><h3>Hitos del proyecto</h3>{table_html(dates)}<p>{text(fields.get('commercial_comments', ''), '')}</p></div></div>
     ''', number=10))
 
     slides.append(financial_slide(images.get('financial_viability_image')))
+    slides = insert_extra_slides(slides, fields, images, SLIDE_ORDER)
 
     css = '''
 @page { size: 13.333in 7.5in; margin: 0; }
@@ -1521,6 +1674,56 @@ a { color:var(--red); font-weight:800; text-decoration:none; }
     .financial-image { display:block; width:100%; height:5.25in; object-fit:contain; object-position:center; background:#F4F1EA; border-radius:.07in; }
 
 .commercial p { font-size:9pt; line-height:1.35; }
+/* --- Expansión: foto de isócrona con su leyenda al lado --- */
+.expansion-main-layout { height:6.2in; }
+.expansion-main-photo { height:3.5in; max-height:none; justify-content:flex-start; gap:.25in; padding:.1in .12in; }
+.expansion-photo-box { flex:none; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:.07in; }
+.expansion-photo-box .expansion-main-image { display:block; width:100%; height:100%; max-height:none; object-fit:contain; }
+.expansion-legend { flex:1; min-width:0; }
+.expansion-legend .panel-kicker { margin:0 0 .09in; }
+.convention-legend.list { grid-template-columns:repeat(2,minmax(0,1fr)); gap:.08in .14in; }
+.convention-legend.list .convention-item { grid-template-columns:.55in 1fr; grid-template-rows:auto; gap:.1in; padding:.045in .07in; }
+.convention-legend.list .convention-swatch { height:.2in; }
+.convention-legend.list .convention-item span:last-child { font-size:7.4pt; letter-spacing:.05em; line-height:1.15; }
+.expansion-main-panel .kpi-grid.has-students { grid-template-columns:repeat(4,1fr); }
+.expansion-main-panel .kpi-grid.has-students > div { padding:.13in .1in; }
+.expansion-main-panel .kpi-grid.has-students span { font-size:6.4pt; letter-spacing:.04em; }
+.expansion-main-panel .kpi-grid.has-students strong { font-size:17pt; }
+.expansion-column .market-share.has-students { grid-template-columns:repeat(3,1fr); }
+.expansion-column .market-share.has-students span { font-size:6.2pt; }
+/* --- Imágenes que aprovechan toda la diapositiva --- */
+.gallery { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.12in; min-height:6.2in; margin-top:-.04in; }
+.gallery-row { display:flex; gap:.12in; justify-content:center; }
+.gallery-tile { flex:none; overflow:hidden; background:#fff; border-radius:.08in; box-shadow:0 8px 18px rgba(70,25,0,.15); }
+.gallery-tile img { display:block; width:100%; height:100%; object-fit:cover; }
+.sister-layout { grid-template-columns:56% 44%; height:6in; }
+.sister-photo { height:6in; }
+.sister-right { height:6in; }
+.sister-photo-col { display:flex; justify-content:center; align-items:flex-start; height:6in; }
+.sister-photo-fit { padding:.05in; background:#fff; border-radius:.11in; box-shadow:0 11px 24px rgba(70,25,0,.14); }
+.sister-photo-fit .store-image { display:block; width:100%; height:100%; object-fit:contain; border-radius:.07in; background:#fff; }
+.solution-photos .photo-large { height:5.05in; }
+.solution-photos.has-links .photo-large { height:4.6in; }
+.commercial .data-table { font-size:9.4pt; }
+.commercial .data-table th { padding:.125in .09in; font-size:8.4pt; }
+.commercial .data-table td { padding:.118in .09in; }
+.generator-grid-large .generator-card { grid-template-columns:3.6in 1fr; }
+.generator-grid-large .generator-img { width:3.6in; }
+.financial-layout.fit { height:auto; display:flex; justify-content:center; }
+.financial-photo-card.fit { height:auto; }
+.financial-image.fit { object-fit:contain; background:#fff; }
+/* --- Diapositivas adicionales --- */
+.commercial.compact .data-table { font-size:8.2pt; }
+.commercial.compact .data-table th { padding:.085in .07in; font-size:7.2pt; }
+.commercial.compact .data-table td { padding:.075in .07in; }
+.commercial.tight .data-table { font-size:7.4pt; }
+.commercial.tight .data-table th { padding:.06in .06in; font-size:6.8pt; }
+.commercial.tight .data-table td { padding:.05in .06in; }
+.custom-text-only { max-height:6.1in; overflow:hidden; }
+.custom-ribbon { margin-top:.14in; padding:.13in .2in; background:#fff; border-left:6px solid var(--orange); box-shadow:0 6px 14px rgba(82,32,0,.1); font-size:11pt; line-height:1.4; color:var(--ink); }
+.custom-text-only { min-height:4in; padding:.4in .5in; background:#fff; border-left:8px solid var(--orange); border-radius:.08in; box-shadow:0 11px 24px rgba(70,25,0,.12); font-size:15pt; line-height:1.5; color:var(--ink); }
+.custom-side { display:flex; gap:.25in; align-items:flex-start; justify-content:center; margin-top:-.04in; }
+.custom-text { flex:1; min-width:0; padding:.3in .32in; background:#fff; border-left:6px solid var(--orange); border-radius:.08in; box-shadow:0 11px 24px rgba(70,25,0,.12); font-size:13pt; line-height:1.45; color:var(--ink); }
 .empty-note { padding:.16in; color:#999; font-size:8pt; }
 .image-placeholder { display:flex; align-items:center; justify-content:center; min-height:1in; color:#9A8D7D; background:repeating-linear-gradient(135deg,#F4F0E8 0,#F4F0E8 10px,#EEE8DD 10px,#EEE8DD 20px); font-size:8pt; font-weight:800; letter-spacing:.06em; text-transform:uppercase; }
 
